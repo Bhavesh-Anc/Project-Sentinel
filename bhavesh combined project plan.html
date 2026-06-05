@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Combined Quant + IB Project Plan</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f5f2eb;color:#1a1814;font-family:'Syne',sans-serif;font-size:14px}
+.nav{background:#1a1814;display:flex;gap:0;position:sticky;top:0;z-index:100;flex-wrap:wrap}
+.nb{background:transparent;border:none;color:#888;font-family:'Syne',sans-serif;font-size:12px;font-weight:600;letter-spacing:1px;text-transform:uppercase;padding:14px 20px;cursor:pointer;transition:all .15s;border-bottom:3px solid transparent}
+.nb:hover{color:#ccc}
+.nb.active{color:#f5f2eb;border-bottom-color:#c1440e}
+header{padding:44px 44px 28px;border-bottom:1px solid #d4cfc7;background:#fff}
+.eyebrow{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2px;color:#c1440e;text-transform:uppercase;margin-bottom:8px}
+h1{font-family:'Instrument Serif',serif;font-size:38px;font-weight:400;line-height:1.1;margin-bottom:10px}
+h1 em{font-style:italic;color:#c1440e}
+.sub{font-size:14px;color:#6b6660;line-height:1.7;max-width:620px}
+.page{display:none;padding:36px 44px 60px}
+.page.active{display:block}
+.sl{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6b6660;margin-bottom:10px;margin-top:1.5rem;padding-bottom:6px;border-bottom:1px solid #d4cfc7}
+.sl:first-child{margin-top:0}
+.card{background:#fff;border:1px solid #d4cfc7;border-radius:10px;padding:16px 20px;margin-bottom:10px}
+.ct{font-size:13px;font-weight:600;color:#1a1814;margin-bottom:6px}
+.cb{font-size:13px;color:#1a1814;line-height:1.65}
+.cb li{margin-left:16px;margin-bottom:3px;list-style:disc}
+.badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;margin-left:6px;text-transform:uppercase;letter-spacing:.5px}
+.bi{background:#e1eaf0;color:#1a3d6b}
+.bs{background:#e1f0e8;color:#1a6b4a}
+.bw{background:#fef5e1;color:#8b6914}
+.bd{background:#fee1e1;color:#9b1a1a}
+.br{background:#fde8e1;color:#c1440e}
+.ibox{background:#e1eaf0;border-radius:8px;padding:11px 16px;margin-bottom:12px;font-size:13px;color:#1a3d6b;line-height:1.6;border:1px solid #c0d0e0}
+.wbox{background:#fef5e1;border-radius:8px;padding:11px 16px;margin-bottom:12px;font-size:13px;color:#8b6914;line-height:1.6;border:1px solid #e0d0a0}
+.sbox{background:#e1f0e8;border-radius:8px;padding:11px 16px;margin-bottom:12px;font-size:13px;color:#1a6b4a;line-height:1.6;border:1px solid #a0d0b0}
+.t{width:100%;border-collapse:collapse;font-size:13px}
+.t th{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6b6660;padding:8px 10px;text-align:left;background:#edeae2;border-bottom:1px solid #d4cfc7;white-space:nowrap}
+.t td{padding:10px 10px;border-bottom:1px solid #d4cfc7;vertical-align:top;line-height:1.5;color:#1a1814}
+.t tr:last-child td{border-bottom:none}
+.t tr:hover td{background:#f5f2eb}
+.tw{border:1px solid #d4cfc7;border-radius:10px;overflow:hidden;margin-bottom:14px;overflow-x:auto}
+.mono{font-family:'JetBrains Mono',monospace;font-size:11px;color:#6b6660}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.code{background:#1a1814;border-radius:8px;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#c8c0b0;line-height:1.7;margin-bottom:12px;overflow-x:auto;white-space:pre}
+.wc{background:#fff;border:1px solid #d4cfc7;border-radius:10px;overflow:hidden;margin-bottom:8px}
+.wh{padding:10px 16px;border-bottom:1px solid #d4cfc7;display:flex;align-items:center;justify-content:space-between;background:#faf9f6}
+.wt{font-size:13px;font-weight:600;color:#1a1814}
+.wb{padding:12px 16px}
+.del{background:#e1f0e8;border-radius:4px;padding:3px 10px;font-size:11px;font-weight:700;color:#1a6b4a;display:inline-block;margin-top:8px;text-transform:uppercase;letter-spacing:.5px}
+.msg{background:#f5f2eb;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.8;color:#1a1814;margin-top:8px;border-left:3px solid #c1440e;font-style:italic}
+@media(max-width:700px){.two{grid-template-columns:1fr}header{padding:24px 20px 20px}.page{padding:20px 16px 40px}h1{font-size:26px}.nav{overflow-x:auto}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">Bhavesh Anchalia · Combined Project Plan</div>
+  <h1>One project.<br><em>Two audiences.</em></h1>
+  <div class="sub">A published SSRN research note on India's rate cycle backed by a live Python codebase. IB reviewers read the paper. Quant reviewers run the code. Same intellectual work — Graviton, Quadeye, Goldman Strats, JP Morgan Fixed Income all addressed.</div>
+</header>
+
+<nav class="nav">
+  <button class="nb active" onclick="sw('overview')">Overview</button>
+  <button class="nb" onclick="sw('paper')">Research paper</button>
+  <button class="nb" onclick="sw('code')">Python codebase</button>
+  <button class="nb" onclick="sw('timeline')">Build timeline</button>
+  <button class="nb" onclick="sw('publish')">How to publish</button>
+  <button class="nb" onclick="sw('pitch')">How to pitch it</button>
+</nav>
+
+<!-- OVERVIEW -->
+<div id="p-overview" class="page active">
+<div class="ibox"><strong>The concept:</strong> One project, two deliverables. A 10-page institutional research note on India's rate cycle — what IB reviewers read — backed by a live Python codebase with G-Sec curve bootstrapping, RBI policy forecasting, and walk-forward validated trading signals — what quant reviewers run. Same intellectual work, two doors opened simultaneously.</div>
+
+<div class="sl">Project title</div>
+<div class="card">
+  <div class="ct" style="font-size:16px;font-family:'Instrument Serif',serif;font-weight:400">"India Rate Cycle 2025–26: A Quantitative Framework for RBI Policy Forecasting and G-Sec Yield Curve Dynamics"</div>
+  <div class="cb" style="margin-top:6px;color:#6b6660">Published on SSRN (free). GitHub repo linked in the paper. LinkedIn post with one key chart. This goes in every cover letter and LinkedIn message from July 2026 onward.</div>
+</div>
+
+<div class="sl">Why this works for both audiences</div>
+<div class="two">
+  <div class="card">
+    <div class="ct">For quant firms <span class="badge bi">Graviton · Quadeye · GS Strats</span></div>
+    <div class="cb"><ul>
+      <li>Live Python codebase they can clone and run</li>
+      <li>G-Sec curve bootstrapping = direct analog to SOFR work at Axxela</li>
+      <li>Walk-forward validated signal — not in-sample backtest</li>
+      <li>SSRN paper = credibility signal no other fresher candidate has</li>
+      <li>Shows hypothesis → model → validation pipeline</li>
+    </ul></div>
+  </div>
+  <div class="card">
+    <div class="ct">For IBs <span class="badge bs">JP Morgan · Deutsche Bank · Goldman IB</span></div>
+    <div class="cb"><ul>
+      <li>Research note = exactly what rates analysts write on day one</li>
+      <li>RBI policy forecasting = macro research skill demonstrated</li>
+      <li>G-Sec implications = fixed income market knowledge</li>
+      <li>Corporate issuance section = client-facing IB framing</li>
+      <li>Structured view, not just model output</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="sl">What makes this extraordinary vs. ordinary</div>
+<div class="tw"><table class="t">
+<thead><tr><th>Ordinary project</th><th>This project</th></tr></thead>
+<tbody>
+<tr><td style="color:#6b6660">Stock price prediction with Random Forest</td><td>Rates curve bootstrapping from real data you traded</td></tr>
+<tr><td style="color:#6b6660">Backtest of a moving average crossover</td><td>Walk-forward validated macro signal — out-of-sample Sharpe reported</td></tr>
+<tr><td style="color:#6b6660">Sentiment analysis on news headlines</td><td>FOMC surprise quantification → yield curve shape regime prediction</td></tr>
+<tr><td style="color:#6b6660">GitHub repo with no documentation</td><td>SSRN paper + clean GitHub + LinkedIn post with key chart</td></tr>
+<tr><td style="color:#6b6660">"I built a trading model" in the cover letter</td><td>"I published a rates research paper — here's the SSRN link"</td></tr>
+</tbody>
+</table></div>
+
+<div class="sl">Time and data cost</div>
+<div class="card"><div class="cb"><strong>Total: 5–6 weeks</strong> — June alongside internship (data + model skeletons), July full-time (paper + validation + publish). All data is completely free: FRED API, RBI website, FIMMDA/CCIL, Yahoo Finance, CCIL OIS. No Bloomberg terminal, no paid data required whatsoever.</div></div>
+</div>
+
+<!-- RESEARCH PAPER -->
+<div id="p-paper" class="page">
+<div class="ibox">The paper is 10–12 pages. Written like an institutional research note — the kind JP Morgan or Deutsche Bank Rates publishes. Not an academic paper. Clear, opinionated, data-backed. One main thesis with quantitative supporting evidence.</div>
+
+<div class="sl">Paper structure</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 1 — Executive Summary (0.5 pages)</div><span class="badge bi">Write last</span></div>
+  <div class="wb"><div class="cb">3–4 bullet points with your main finding and recommendation. Example: "RBI likely to cut 50bps in H2 2025, driven by easing core CPI and slowing IIP. G-Sec 10Y forecasted at 6.5–6.6% by Dec 2025. Corporate issuers should front-load long-duration issuance in Q3." Write this after completing everything else — executive summaries are written last, read first.</div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 2 — India Macro Context (1.5 pages)</div><span class="badge bs">Week 1</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>GDP growth trajectory — RBI MPC forecasts vs. actuals</li>
+    <li>CPI decomposition — food vs. core vs. fuel inflation trends</li>
+    <li>IIP and PMI — demand-side pressure on rates</li>
+    <li>Current account deficit and INR implications for RBI's room to cut</li>
+    <li>US Fed trajectory and spillover to India — this is your SOFR angle, and it's unique to your profile</li>
+  </ul>
+  <div class="del">Data: RBI MPC minutes, MOSPI, FRED API</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 3 — RBI Policy Forecasting Model (2 pages)</div><span class="badge bs">Week 1–2</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Build a Taylor Rule estimate for India: repo rate = f(inflation gap, output gap)</li>
+    <li>Compare Taylor Rule implied rate vs. actual RBI repo rate historically 2015–2025</li>
+    <li>Identify RBI reaction function — when does RBI deviate from Taylor Rule and why?</li>
+    <li>Build MPC probability model: P(cut) = logistic regression on CPI gap, output gap, Fed rate, INR move</li>
+    <li>Output: probability table for next 3 MPC meetings with confidence intervals</li>
+  </ul>
+  <div class="del">Output: Taylor Rule vs. Actual Repo Rate chart + MPC probability table</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 4 — G-Sec Yield Curve Analysis (2.5 pages)</div><span class="badge bw">Week 2</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Bootstrap India G-Sec spot curve from FIMMDA data</li>
+    <li>Fit Nelson-Siegel model — decompose curve into level (β₀), slope (β₁), curvature (β₂)</li>
+    <li>Historical analysis: how does curve shape change around RBI cut cycles? (2019, 2020 COVID, 2022 hike)</li>
+    <li>Forward rate analysis: what is the market pricing in for the next 12 months?</li>
+    <li>Stress test: what happens to 10Y G-Sec if US Fed holds higher for longer?</li>
+    <li>3 scenarios: base case (50bps cut), bull case (75bps cut), bear case (hold)</li>
+  </ul>
+  <div class="del">Output: Nelson-Siegel fitted curve + forward rate chart + 3-scenario yield table</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 5 — Market Implications (2 pages)</div><span class="badge bw">Week 3</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li><strong>IB-facing:</strong> Which corporate sectors benefit from rate cuts? (Real estate, infra, NBFCs). Which face refinancing risk?</li>
+    <li>Optimal issuance window for corporate bonds — the core IB client recommendation</li>
+    <li>G-Sec vs. corporate spread dynamics under each rate scenario</li>
+    <li><strong>Quant-facing:</strong> Tradeable signal rules — when to go long/short G-Sec futures based on Taylor Rule gap</li>
+    <li>Risk factors: monsoon/food inflation shock, US recession, INR depreciation pressure</li>
+  </ul>
+  <div class="del">Output: sector benefit/risk heatmap + corporate issuance recommendation + signal rules</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Section 6 — Conclusion + Appendix (1 page)</div><span class="badge bd">Week 3–4</span></div>
+  <div class="wb"><div class="cb">3 main findings. Key risk to your thesis. Appendix: data sources, model equations, GitHub link, methodology notes. Keep the appendix precise — quant reviewers go straight there and judge rigour by what they find.</div></div>
+</div>
+</div>
+
+<!-- PYTHON CODEBASE -->
+<div id="p-code" class="page">
+<div class="ibox">The GitHub repo is what quant reviewers actually run. It needs to be clean, documented, and runnable in under 5 minutes. Structure it as a professional quant library — not a Jupyter notebook dump.</div>
+
+<div class="sl">Repository structure</div>
+<div class="code">india-rates-research/
+├── README.md               ← project overview, key findings, 3 commands to run
+├── RESULTS.md              ← out-of-sample Sharpe, drawdown, hit rate upfront
+├── requirements.txt        ← pinned versions
+├── data/
+│   ├── fetch_rbi_data.py   ← RBI repo rate, CPI, IIP from FRED + RBI site
+│   ├── fetch_gsec_data.py  ← G-Sec yield curve from FIMMDA/CCIL (free daily CSV)
+│   └── fetch_fed_data.py   ← SOFR, Fed Funds, US CPI from FRED API
+├── models/
+│   ├── taylor_rule.py      ← Taylor Rule estimation, output gap (HP filter)
+│   ├── nelson_siegel.py    ← NS curve fitting, β₀/β₁/β₂, forward rates
+│   ├── mpc_probability.py  ← logistic regression for RBI cut probability
+│   └── macro_signals.py    ← CPI surprise, IIP, PMI signal construction
+├── backtesting/
+│   ├── signal_backtest.py  ← walk-forward validation (NEVER use full-sample)
+│   └── performance.py      ← Sharpe, drawdown, hit rate, info ratio
+├── visualisation/
+│   └── charts.py           ← all charts used in the paper — reproducible
+├── notebooks/
+│   └── main_analysis.ipynb ← end-to-end walkthrough for reviewers
+└── paper/
+    └── india_rate_cycle_bhavesh_anchalia.pdf  ← the SSRN paper itself</div>
+
+<div class="sl">Core modules explained</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">taylor_rule.py</div><span class="badge bi">Quant centrepiece</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Estimate India's output gap using Hodrick-Prescott filter on GDP data</li>
+    <li>Inflation gap = actual CPI minus RBI target (4%)</li>
+    <li>Taylor Rule: r* = neutral_rate + 0.5 × (inflation_gap) + 0.5 × (output_gap)</li>
+    <li>Calibrate neutral rate using average real repo rate over 2015–2019 pre-COVID period</li>
+    <li>Key finding to test: when Taylor Rule deviation exceeds 75bps, RBI adjusts within 2 quarters — verify historically</li>
+  </ul></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">nelson_siegel.py</div><span class="badge bi">Direct SOFR analog</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Fit Nelson-Siegel model to G-Sec spot curve: y(t) = β₀ + β₁·(1−e^(−t/τ))/(t/τ) + β₂·((1−e^(−t/τ))/(t/τ) − e^(−t/τ))</li>
+    <li>β₀ = level, β₁ = slope, β₂ = curvature — exactly the decomposition you did mentally at Axxela</li>
+    <li>Extract implied forward rates from fitted parameters</li>
+    <li>Historical β₀/β₁/β₂ behaviour before/after RBI cut cycles = your analytical contribution</li>
+    <li>This is the module quant reviewers will spend the most time on</li>
+  </ul></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">signal_backtest.py — the most important module</div><span class="badge br">Walk-forward only</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Signal: go long 10Y G-Sec when Taylor Rule gap > 75bps AND CPI momentum falling</li>
+    <li><strong>Walk-forward validation:</strong> train on 2015–2021, test on 2022–2025. Never touch the test set during development.</li>
+    <li>Performance metrics: out-of-sample Sharpe, max drawdown, hit rate, information ratio vs. buy-and-hold</li>
+    <li>Transaction cost adjustment: 5bps round-trip on G-Sec futures</li>
+    <li>Report the out-of-sample Sharpe honestly — even 0.4 with proper methodology is impressive. A suspiciously high number will be challenged immediately in a Graviton interview.</li>
+  </ul></div></div>
+</div>
+
+<div class="sl">Free data sources — everything you need</div>
+<div class="tw"><table class="t">
+<thead><tr><th>Data needed</th><th>Source</th><th>How to access</th></tr></thead>
+<tbody>
+<tr><td>India CPI, IIP, GDP</td><td>FRED (Federal Reserve)</td><td class="mono">pip install fredapi → free API key at fred.stlouisfed.org</td></tr>
+<tr><td>RBI repo rate history, MPC decisions</td><td>RBI website</td><td class="mono">rbi.org.in → Statistics → Key Rates (Excel download)</td></tr>
+<tr><td>G-Sec yield curve daily</td><td>FIMMDA / CCIL</td><td class="mono">fimmda.org → Market Data → Zero Coupon Yield Curve (free daily)</td></tr>
+<tr><td>India OIS rates</td><td>Investing.com / NSE</td><td class="mono">Scrape or manual download — monthly update sufficient</td></tr>
+<tr><td>US SOFR, Fed Funds, US CPI</td><td>FRED</td><td class="mono">Same FRED API key — series IDs: SOFR, FEDFUNDS, CPIAUCSL</td></tr>
+<tr><td>INR/USD, Brent Crude</td><td>Yahoo Finance</td><td class="mono">pip install yfinance → completely free, no key needed</td></tr>
+<tr><td>India PMI</td><td>S&P Global monthly release</td><td class="mono">Public release — manually add to CSV monthly</td></tr>
+</tbody>
+</table></div>
+</div>
+
+<!-- TIMELINE -->
+<div id="p-timeline" class="page">
+<div class="ibox">June: 1–1.5 hrs/day alongside internship — data pipelines and model skeletons. July: full-time build, paper writing, and publication. <strong>Target publish date: July 31, 2026.</strong> This gives you a live SSRN link before August job applications ramp up.</div>
+
+<div class="sl">Week by week</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 1 — Jun 1–7 — Data + Environment</div><span class="badge bs">Setup</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Create GitHub repo with full structure above. README placeholder. First commit.</li>
+    <li>Get FRED API key — 5 minutes, completely free at fred.stlouisfed.org</li>
+    <li>Write fetch_rbi_data.py — India CPI, IIP, repo rate from FRED + RBI Excel download</li>
+    <li>Write fetch_gsec_data.py — FIMMDA zero coupon yield curve daily CSV</li>
+    <li>Write fetch_fed_data.py — SOFR, Fed Funds, US CPI from FRED</li>
+    <li>Plot 3 exploratory charts: India CPI vs. repo rate, G-Sec 10Y history, RBI rate cycle periods marked</li>
+  </ul>
+  <div class="del">Deliverable: GitHub repo live, all data pipelines working, 3 exploratory charts</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 2 — Jun 8–14 — Taylor Rule Model</div><span class="badge bs">Core quant</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Build taylor_rule.py — HP filter for output gap, CPI gap, Taylor Rule formula</li>
+    <li>Calibrate neutral rate using 2015–2019 average real repo rate</li>
+    <li>Plot Taylor Rule implied rate vs. actual RBI repo rate 2015–2025</li>
+    <li>Annotate deviations — what did RBI do next each time?</li>
+    <li>Start Section 2 (Macro Context) of the paper — 1.5 pages, mostly prose and 2 charts</li>
+  </ul>
+  <div class="del">Deliverable: taylor_rule.py working, Section 2 draft complete, key chart ready</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 3 — Jun 15–21 — Nelson-Siegel + MPC Probability</div><span class="badge bw">Core quant</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Build nelson_siegel.py — fit NS model, extract β₀/β₁/β₂, compute forward rates</li>
+    <li>Historical NS fitting: 2019 cut cycle, 2020 COVID cuts, 2022 hike cycle — how did shape evolve?</li>
+    <li>Build mpc_probability.py — logistic regression for P(RBI cut) at each MPC meeting</li>
+    <li>Write Section 3 (RBI Policy Forecasting) — 2 pages, your quantitative centrepiece</li>
+  </ul>
+  <div class="del">Deliverable: nelson_siegel.py + mpc_probability.py working, Section 3 draft done</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 4 — Jun 22–30 — Backtest + Section 4</div><span class="badge bw">Validation</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Build signal_backtest.py — walk-forward validation strictly on 2022–2025 test set</li>
+    <li>Compute out-of-sample Sharpe, max drawdown, hit rate</li>
+    <li>Write Section 4 (G-Sec Yield Curve Analysis) — 2.5 pages, most technical section</li>
+    <li>Finalise all charts in visualisation/charts.py</li>
+  </ul>
+  <div class="del">Deliverable: backtest results documented, Section 4 draft, all charts clean and reproducible</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 5 — Jul 1–10 — Implications + Full Draft</div><span class="badge bd">July sprint</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Write Section 5 (Market Implications) — IB-facing: corporate issuance window, sector analysis</li>
+    <li>Write Section 6 (Conclusion + Appendix)</li>
+    <li>Write Executive Summary last</li>
+    <li>Send full draft to 2 readers: VIT finance professor + Axxela manager for feedback</li>
+    <li>Complete GitHub README with installation guide and RESULTS.md</li>
+  </ul>
+  <div class="del">Deliverable: full 10–12 page paper draft, complete GitHub repo</div></div></div>
+</div>
+
+<div class="wc">
+  <div class="wh"><div class="wt">Week 6 — Jul 11–20 — Polish + Publish</div><span class="badge bd">Launch</span></div>
+  <div class="wb"><div class="cb"><ul>
+    <li>Incorporate feedback, final proofread</li>
+    <li>Format paper — clean Word or LaTeX template (SSRN has no format requirement)</li>
+    <li>Submit to SSRN — free, appears in 1–3 days</li>
+    <li>Make GitHub repo public</li>
+    <li>Write and publish LinkedIn post — 3 key findings, 1 chart, SSRN link, GitHub link</li>
+    <li>Update all 5 resume variants to lead with this project</li>
+    <li>Refire all LinkedIn messages to quant firms and IBs with SSRN link included</li>
+  </ul>
+  <div class="del">Deliverable: live SSRN paper + public GitHub + LinkedIn post + updated resumes</div></div></div>
+</div>
+</div>
+
+<!-- HOW TO PUBLISH -->
+<div id="p-publish" class="page">
+
+<div class="sl">SSRN — step by step</div>
+<div class="card"><div class="cb"><ul>
+  <li>Go to ssrn.com → Create free account → Submit paper → Upload PDF</li>
+  <li>Category: <strong>Finance → Fixed Income</strong> and <strong>Monetary Economics</strong></li>
+  <li>Title exactly as specified above — makes it searchable by the right keywords</li>
+  <li>Abstract: 150 words max. Sentence 1: main finding. Sentence 2: methodology. Sentence 3: key result. Sentence 4: implication.</li>
+  <li>Paper appears in 1–3 business days. You get a permanent URL: ssrn.com/abstract=XXXXXXX</li>
+  <li>SSRN is where Goldman, JP Morgan, and BlackRock research teams publish working papers. Your paper appearing there gives it institutional credibility that a GitHub link alone does not.</li>
+</ul></div></div>
+
+<div class="sl">GitHub — what makes it impressive to quant reviewers</div>
+<div class="card"><div class="cb"><ul>
+  <li>README must open with: 1-paragraph project summary, 3 bullet key findings, 3-command installation, screenshot of best chart</li>
+  <li>RESULTS.md: out-of-sample Sharpe, max drawdown, hit rate — the numbers before anything else</li>
+  <li>Every function has a docstring. Every module has a module-level comment.</li>
+  <li>requirements.txt pinned to specific versions (e.g. pandas==2.1.0, not pandas>=2.0)</li>
+  <li>Notebook runs end-to-end after pip install with no errors</li>
+  <li>Commit history shows progressive work — commit after each module, not all at once</li>
+</ul></div></div>
+
+<div class="sl">LinkedIn post — exact format</div>
+<div class="card">
+  <div class="cb">
+    <strong>Line 1 (hook, under 10 words):</strong> "India's rate cycle is at an inflection point."<br><br>
+    <strong>Lines 2–6:</strong> 3 key findings in plain English. No jargon. Example: "Our Taylor Rule model shows RBI is currently running 80bps above the implied neutral rate. In every comparable historical episode since 2015, this gap closed within 2 quarters."<br><br>
+    <strong>Line 7:</strong> "Full research note + Python codebase:" [SSRN link] [GitHub link]<br><br>
+    <strong>Image:</strong> Your Nelson-Siegel curve chart or Taylor Rule deviation chart. One clean chart, white background, clear labels.<br><br>
+    <strong>After posting:</strong> Tag 2–3 people at JP Morgan India or Deutsche Bank Rates whom you've already messaged. They get notified — second touchpoint that doesn't feel like spam.
+  </div>
+</div>
+</div>
+
+<!-- HOW TO PITCH IT -->
+<div id="p-pitch" class="page">
+
+<div class="sl">LinkedIn message — quant firms (after publishing)</div>
+<div class="card">
+  <div class="ct">For Graviton / Quadeye / GS Strats / Citadel</div>
+  <div class="msg">"Hi [Name],<br><br>
+I'm Bhavesh Anchalia, a CS Engineering graduate from VIT (July 2026, CGPA 8.61). I've spent 6 months as a Fixed Income Derivatives Trading Intern at Axxela Research and Analytics, executing live SOFR 3-Month Futures positions and building Python quant models for carry, roll-down, and convexity analysis across the futures strip.<br><br>
+I recently published a quantitative research paper on India's rate cycle — bootstrapping G-Sec yield curves with Nelson-Siegel, building a Taylor Rule-based RBI policy forecasting model, and walk-forward validating a rates trading signal (out-of-sample Sharpe: [X], max drawdown: [Y]%). The Python codebase is fully open on GitHub.<br><br>
+SSRN: [link] | GitHub: [link]<br><br>
+I'm interested in Quantitative Researcher roles and would welcome a conversation.<br><br>
+Bhavesh Anchalia | +91 83022 25144"</div>
+</div>
+
+<div class="card" style="margin-top:10px">
+  <div class="ct">For JP Morgan Fixed Income / Deutsche Bank Rates / Goldman IB</div>
+  <div class="msg">"Hi [Name],<br><br>
+I'm Bhavesh Anchalia, a CS Engineering graduate from VIT (July 2026, CGPA 8.61), currently completing a Fixed Income Derivatives Trading internship at Axxela Research and Analytics — executing live SOFR futures positions and conducting macro research on FOMC outcomes and rate curve dynamics.<br><br>
+I recently published an institutional research note on India's rate cycle — forecasting the RBI policy path using a Taylor Rule framework, modelling G-Sec yield curve dynamics under three rate scenarios, and identifying optimal corporate bond issuance windows. The work is directly aligned with what Fixed Income and Rates analysts produce.<br><br>
+SSRN: [link]<br><br>
+I'm interested in Analyst roles in Fixed Income / Rates and would welcome a brief conversation.<br><br>
+Bhavesh Anchalia | +91 83022 25144"</div>
+</div>
+
+<div class="sl">How to update your resume with this project</div>
+<div class="card"><div class="cb">
+  Replace the lead project in both the QuantTrading and InvestmentBanking resume variants. The new bullet reads:<br><br>
+  <em>"Published quantitative research on India's rate cycle (SSRN, Jul 2026): bootstrapped G-Sec Nelson-Siegel yield curve, built Taylor Rule RBI policy forecasting model with walk-forward validated rates trading signal — out-of-sample Sharpe [X], max drawdown [Y]%; Python codebase on GitHub"</em><br><br>
+  Keep Invvest as the second project. The SSRN paper leads because it is verifiable, live, public, and specific to the target role in a way no other fresher candidate can replicate.
+</div></div>
+
+<div class="sl">One honest note on the Sharpe ratio</div>
+<div class="wbox">The out-of-sample Sharpe is the single most important number in this project for quant firms. Do not adjust or round it upward. If it's 0.4, report 0.4 — a low but honest out-of-sample Sharpe with rigorous walk-forward methodology is more impressive to Graviton and Quadeye than a suspiciously high backtest number. They will ask exactly how you validated it in the interview. The answer "walk-forward, train 2015–2021, test 2022–2025, never touched test set during development" is what gets you to the next round.</div>
+</div>
+
+<script>
+function sw(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nb').forEach(t=>t.classList.remove('active'));
+  document.getElementById('p-'+name).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>
