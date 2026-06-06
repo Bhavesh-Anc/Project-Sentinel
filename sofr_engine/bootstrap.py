@@ -123,13 +123,36 @@ class SOFRCurveBootstrapper:
 
         return self
 
+    def add_deposits(
+        self,
+        deposit_quotes: list[tuple[float, float]],
+        day_count_basis: int = 360,
+    ) -> "SOFRCurveBootstrapper":
+        """
+        Add money-market deposit / T-bill / Term SOFR rates at short tenors (< 1Y).
+        Uses simple interest: DF(T) = 1 / (1 + r × T_days / basis)
+
+        Parameters
+        ----------
+        deposit_quotes  : list of (tenor_years, rate_decimal)
+                          e.g. [(0.25, 0.0363), (0.5, 0.0365), (1.0, 0.0365)]
+        day_count_basis : 360 for SOFR/T-bills, 365 for some markets
+        """
+        for tenor_yrs, rate in sorted(deposit_quotes, key=lambda x: x[0]):
+            T_days = tenor_yrs * 365.25
+            df = 1.0 / (1.0 + rate * T_days / day_count_basis)
+            if tenor_yrs > self._times[-1] + 1e-6:
+                self._times.append(tenor_yrs)
+                self._dfs.append(df)
+        return self
+
     def add_ois_swaps(
         self,
         swap_quotes: list[tuple[float, float]],
         payment_freq: int = 1,
     ) -> "SOFRCurveBootstrapper":
         """
-        Bootstrap the long end from SOFR OIS swap par rates.
+        Bootstrap the long end from SOFR OIS swap par rates (tenors >= 1Y).
 
         Parameters
         ----------
@@ -140,17 +163,24 @@ class SOFRCurveBootstrapper:
         dt = 1.0 / payment_freq
 
         for tenor, par_rate in sorted(swap_quotes, key=lambda x: x[0]):
+            # For sub-annual tenors, route to deposit pricing instead
+            if tenor < dt - 1e-6:
+                T_days = tenor * 365.25
+                df = 1.0 / (1.0 + par_rate * T_days / 360.0)
+                if tenor > self._times[-1] + 1e-6:
+                    self._times.append(tenor)
+                    self._dfs.append(df)
+                continue
+
             payment_times = np.arange(dt, tenor + 1e-10, dt)
 
-            # Compute annuity for all payment times except the last
+            # Annuity of all coupon payments except the final one
             annuity_known = 0.0
             for t_pay in payment_times[:-1]:
                 annuity_known += dt * self._interp_df(t_pay)
 
-            # Bootstrap: solve for DF at swap maturity
-            # K × Σᵢ αᵢ DF(Tᵢ) + DF(T_n) = 1  (OIS: floating = DF start - DF end)
-            # K × annuity_known + K × dt × DF(T_n) + DF(T_n) = 1
-            # DF(T_n) × (1 + K × dt) = 1 - K × annuity_known
+            # Bootstrap final DF:
+            # K × annuity_known + (1 + K × dt) × DF(T_n) = 1
             K = par_rate
             denom = 1.0 + K * dt
             df_swap = (1.0 - K * annuity_known) / denom
@@ -158,9 +188,8 @@ class SOFRCurveBootstrapper:
             if df_swap <= 0:
                 raise ValueError(f"Bootstrapped negative DF at tenor {tenor}y — check swap quotes")
 
-            t_n = tenor
-            if t_n > self._times[-1] + 1e-6:
-                self._times.append(t_n)
+            if tenor > self._times[-1] + 1e-6:
+                self._times.append(tenor)
                 self._dfs.append(df_swap)
 
         return self
@@ -187,6 +216,7 @@ class SOFRCurveBootstrapper:
         ref_date: date,
         sofr_overnight: float,
         futures_df: pd.DataFrame | None = None,
+        deposit_quotes: list[tuple[float, float]] | None = None,
         ois_quotes: list[tuple[float, float]] | None = None,
         sigma: float = 0.010,
     ) -> DiscountCurve:
@@ -195,11 +225,13 @@ class SOFRCurveBootstrapper:
 
         Parameters
         ----------
-        ref_date       : pricing date
-        sofr_overnight : overnight SOFR (decimal)
-        futures_df     : DataFrame from SOFRFuturesCurve.contracts (or None)
-        ois_quotes     : [(tenor_yrs, par_rate_decimal), ...] (or None)
-        sigma          : HW short-rate vol for convexity adjustment
+        ref_date        : pricing date
+        sofr_overnight  : overnight SOFR (decimal)
+        futures_df      : DataFrame from SOFRFuturesCurve.contracts (or None)
+        deposit_quotes  : [(tenor_yrs, rate_decimal), ...] for sub-1Y pillars
+                          (T-bills, SOFR term rates, SOFR averages)
+        ois_quotes      : [(tenor_yrs, par_rate_decimal), ...] for 1Y+ OIS swaps
+        sigma           : HW short-rate vol for convexity adjustment
 
         Returns
         -------
@@ -209,6 +241,9 @@ class SOFRCurveBootstrapper:
 
         if futures_df is not None and not futures_df.empty:
             builder.add_futures(futures_df)
+
+        if deposit_quotes:
+            builder.add_deposits(deposit_quotes)
 
         if ois_quotes:
             builder.add_ois_swaps(ois_quotes)
