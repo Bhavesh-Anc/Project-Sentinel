@@ -144,7 +144,7 @@ def full_metrics(result_df: pd.DataFrame, position_col: str = "position") -> dic
         "hit_rate":               hit_rate(pnl, active_only=True, position=pos),
         "win_loss_ratio":         win_loss_ratio(pnl),
         "profit_factor":          profit_factor(pnl),
-        "total_pnl_bps":          float(cpnl.iloc[-1]) if len(cpnl) > 0 else np.nan,
+        "total_pnl_bps":          float(cpnl.iloc[-1] - cpnl.iloc[0]) if len(cpnl) > 0 else np.nan,
         "n_trading_days":         len(pnl),
         "active_days":            int((pos != 0).sum()) if pos is not None else len(pnl),
         "turnover_per_year":      turnover(pos) if pos is not None else np.nan,

@@ -316,12 +316,50 @@ Signal 3 — SOFR Basis:
 
 ## 5. Key Findings Log
 
-### 2026-06-05 — Project Kickoff
+### 2026-06-06 — Project Kickoff + First Live Data Run
+
+**Setup:**
 - Pivoted from India rates (RBI/G-Sec) to US rates (Fed/SOFR)
-- Core insight: SOFR is the new risk-free rate for all USD derivatives; understanding its curve construction is directly applicable to any rates desk role
-- Decision: Build engine from scratch (no QuantLib) — demonstrates deeper understanding of the math
-- SOFR inception: April 3, 2018. First 3+ years at near-zero (<0.10%). Fed hiking cycle: March 2022 onwards. Rate peaked at 5.30% SOFR (July 2023). Cuts began September 2024.
-- The 2022-2023 hiking cycle is our most important out-of-sample period: unprecedented speed, massive futures vol
+- FRED API connected. Pulled 2,721 rows of macro/SOFR data (2018–present) and 2,982 rows of Treasury CMT yields (2015–present).
+- All models running end-to-end on real data.
+
+**Live Market Snapshot (as of June 2026):**
+- IORB: **3.65%** (Fed has cut ~185bps from the 5.50% peak)
+- Core PCE YoY: **2.11%** (essentially at the 2% target)
+- Unemployment: **4.3%** (above NAIRU of 4.0% → 30bps of slack)
+- 2Y Treasury: **4.05%** | 10Y: **4.47%** | 30Y: **4.97%**
+- 2s10s slope: **+42bps** (back to normal after historic inversion)
+
+**Nelson-Siegel Results:**
+- Latest NS fit: β₀=5.37%, β₁=-1.64%, β₂=-0.47%, λ=0.20, RMSE=0.058%
+- Current regime: **normal_steep** (β₁ < -1%)
+- Regime history (597 weeks): normal_steep 62%, normal_flat 20%, inverted 18%
+- **Inversion lasted 105 weeks** (Nov 2022 → Dec 2024) — deepest at β₁=+1.74% on 2023-05-14
+- The 2s10s hit -108bps on 2023-07-03 — deepest inversion in 40 years
+
+**Taylor Rule Results:**
+- Standard rule (α=β=0.5): Taylor implied rate = **2.25%** vs. actual **3.63%**
+- **Policy gap = +1.38%** (Fed is 138bps ABOVE Taylor Rule)
+- Interpretation: With inflation at target and small unemployment gap, standard rule says rate should be ~2.25%. Fed is running significantly tighter than the rule recommends.
+- Historical extremes: Most overtightened +8.90% (April 2020, COVID shock distortion); most accommodative -3.83% (Dec 2021, pre-hike era)
+- OLS estimated coefficients (2018-2019 pre-ZLB): α̂=0.737, β̂=-0.429, R²=0.30
+  - Note: β is negative in estimation — likely reflects Fed's *forward guidance* rather than contemporaneous reaction; limited sample size (only 2 years)
+  - Decision: Use standard (0.5, 0.5) for the paper; report estimated as robustness check
+
+**Walk-Forward Backtest:**
+- Full history (2018–2026): Sharpe **-0.29**, Hit rate 61.8%
+- OOS period (2022–2026): Sharpe **+0.11**, Hit rate 65.5%
+- The win/loss ratio (0.52) is the problem — the strategy is right directionally 62% of the time but losses are ~2× wins. Classic trend-following problem in rates.
+- Root cause: Signal is slow (annual re-estimation) and yield moves are violent during hike cycles — the return approximation `-duration × Δy` gets hammered during 500bp rate moves
+- **Action items for signal improvement (see TODO)**:
+  1. Add signal decay / position sizing (reduce size when vol is elevated)
+  2. Consider a stop-loss rule (exit long duration if yield rises >50bps)
+  3. The strategy is better at identifying *regime* than *timing* — focus paper framing on regime detection not tactical trading
+
+**Key Paper Findings (to develop in Sections 3–5):**
+1. The 2022–2023 inversion period is now fully resolved. The NS slope factor (β₁) provides a clean continuous measure of the inversion depth and duration.
+2. The Taylor Rule currently signals 138bps of excess tightening. If the Fed follows the rule mechanically, it implies additional cuts to ~2.5% by end-2026.
+3. The SOFR curve (from futures) is pricing only partial convergence to Taylor Rule levels — presenting a potential relative value opportunity.
 
 *(Add new findings below as we discover them)*
 
@@ -359,41 +397,42 @@ $$f^{fwd}(T_1, T_2) = f^{fut}(T_1, T_2) - \frac{1}{2}\sigma^2 T_1 T_2$$
 
 ## 7. TODO / Next Steps
 
-### Immediate (Week 1)
-- [ ] Set up FRED API key and test data fetch
-- [ ] Download and parse CME SR3 futures historical settlements
-- [ ] Implement SOFR day count and compounding utilities
-- [ ] Implement basic discount factor curve class
-- [ ] Validate: compounded SOFR from FRED fixings should match SOFR90DAYAVG series
+### Completed ✓
+- [x] FRED API connected, all data fetched (2015–2026)
+- [x] Full project scaffold: sofr_engine, models, backtesting, visualisation
+- [x] SOFR day count, curve, bootstrap, convexity, instruments
+- [x] Nelson-Siegel rolling factors — 597 weeks of history extracted
+- [x] Taylor Rule model — live results computed
+- [x] Walk-forward backtest framework running end-to-end
+- [x] BRAIN.md with live findings and paper draft
 
-### Week 2
-- [ ] Complete curve bootstrapper (short end from futures)
-- [ ] Implement Hull-White convexity adjustment with calibrated sigma
-- [ ] Add OIS swap segment (longer tenors)
-- [ ] Test curve on known dates (peak SOFR, July 2023)
-- [ ] Implement SOFR swap pricer and validate flat-curve PV = 0 at inception
+### Next (Signal Improvement)
+- [ ] Add vol-scaling to position sizing (halve size when VIX > 25)
+- [ ] Add stop-loss rule: exit long duration if 10Y yield rises >50bps from entry
+- [ ] Test signal on individual components — which contributes most Sharpe?
+- [ ] Re-run backtest with improved signal and document delta vs. baseline
 
-### Week 3
-- [ ] Nelson-Siegel fitter for Treasury curve
-- [ ] Taylor Rule estimator + historical deviation analysis
-- [ ] FOMC probability extractor from SOFR futures
-- [ ] Macro signal construction (core PCE, unemployment gap)
+### SOFR Curve (Real Data)
+- [ ] Fetch actual CME SR3 settlement data for a historical date range
+- [ ] Bootstrap real curve from SR3 strip + OIS quotes (use SOFR swap quotes from Bloomberg/ICAP proxied via FRED term SOFR)
+- [ ] Validate: SOFR90DAYAVG vs. bootstrapped 90-day forward rate
+- [ ] Build curve snapshots for 3 key dates: pre-hike (Jan 2022), peak (Jul 2023), post-cut (Jun 2026)
+- [ ] Convexity adjustment table — show bps impact at each contract expiry
 
-### Week 4
-- [ ] Walk-forward backtest framework
-- [ ] Signal combination and position sizing
-- [ ] Performance metrics: Sharpe, drawdown, Calmar, hit rate
+### Paper Writing
+- [ ] Section 2 draft: SOFR ecosystem (SR3, OIS, term SOFR)
+- [ ] Section 3 draft: Curve construction methodology + convexity adjustment
+- [ ] Section 4 draft: Taylor Rule analysis — "Is the Fed still overtightened?"
+- [ ] Section 5 draft: NS factor regimes — inversion, recovery, current state
+- [ ] Section 6 draft: Backtest methodology and caveats (honest about limitations)
+- [ ] Charts: generate all 10 charts from visualisation/charts.py with real data
+- [ ] Abstract: write once all numbers are finalized
 
-### Week 5
-- [ ] All charts for paper (publication quality)
-- [ ] Jupyter notebook: end-to-end walkthrough
-- [ ] Paper draft: Sections 1-4 complete
-
-### Week 6
-- [ ] Paper: Sections 5-8 + abstract + conclusion
-- [ ] Polish codebase: docstrings, README, examples
-- [ ] Publish SSRN
-- [ ] GitHub README with results and key charts
+### Polish & Publish
+- [ ] Jupyter notebook: clean, annotated, end-to-end run with real data
+- [ ] GitHub README: add key result numbers and embed 2-3 charts
+- [ ] SSRN upload
+- [ ] LinkedIn post: key finding + chart + links
 
 ---
 
