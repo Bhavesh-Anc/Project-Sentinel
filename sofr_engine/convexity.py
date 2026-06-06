@@ -69,14 +69,12 @@ def hull_white_convexity_adjustment(
         # Zero mean-reversion (Vasicek/HJM limit): CA = ½σ²T₁T₂
         return 0.5 * sigma**2 * t1 * t2
     else:
-        # Full Hull-White: B(t, T) = (1 - e^{-a(T-t)}) / a
+        # Full Hull-White: B(0,T) = (1 - e^{-aT}) / a
+        # CA = ½σ²B(0,T1)B(0,T2)  [exact for HW; converges to ½σ²T1T2 as a→0]
         a = mean_reversion
-        B_0_T1  = (1 - np.exp(-a * t1)) / a
-        B_0_T2  = (1 - np.exp(-a * t2)) / a
-        B_T1_T2 = (1 - np.exp(-a * (t2 - t1))) / a
-        # Exact formula for the covariance term
-        ca = (sigma**2 / (2 * a)) * B_T1_T2 * (B_0_T2 - 0.5 * B_T1_T2 * np.exp(-2 * a * t1))
-        return ca
+        B_0_T1 = (1 - np.exp(-a * t1)) / a
+        B_0_T2 = (1 - np.exp(-a * t2)) / a
+        return 0.5 * sigma**2 * B_0_T1 * B_0_T2
 
 
 def calibrate_sigma_from_caps(
