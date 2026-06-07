@@ -43,19 +43,22 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 114 passing ✅")
+    st.markdown("**Tests:** 154 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
     "📐 Nelson-Siegel",
     "🎯 Signals",
     "🎲 FOMC Probs",
+    "⚠️ Risk & Scenarios",
+    "📉 Curve Strategies",
+    "📈 Term Premium",
 ])
 
 
@@ -531,9 +534,257 @@ with tab6:
         )
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 7: Risk Analytics & Scenario Grid
+# ─────────────────────────────────────────────────────────────────────────────
+with tab7:
+    st.header("Risk Analytics — Scenario Grid & DV01 Ladder")
+    st.markdown(
+        "Build a two-swap portfolio (5Y + 10Y payer), compute key-rate DV01 ladder, "
+        "run parallel P&L profile, and view the full stress-test suite."
+    )
+    from sofr_engine import ScenarioEngine, RiskReport
+    from sofr_engine.bootstrap import flat_sofr_curve
+
+    col_r1, col_r2, col_r3 = st.columns(3)
+    with col_r1:
+        r_5y  = st.number_input("5Y par rate (%)",  0.5, 10.0, 3.93, 0.01, key="r5y") / 100
+    with col_r2:
+        r_10y = st.number_input("10Y par rate (%)", 0.5, 10.0, 3.54, 0.01, key="r10y") / 100
+    with col_r3:
+        base_rate = st.number_input("Flat curve level (%)", 0.5, 10.0, 3.58, 0.01, key="base_r") / 100
+
+    try:
+        from sofr_engine.bootstrap import flat_sofr_curve
+        from sofr_engine.instruments import SOFRSwap
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+
+        rc   = flat_sofr_curve(date.today(), base_rate)
+        eff  = date.today() + timedelta(days=2)
+        s5   = SOFRSwap(eff, eff + relativedelta(years=5),  r_5y,  10_000_000, pay_fixed=True)
+        s10  = SOFRSwap(eff, eff + relativedelta(years=10), r_10y, 10_000_000, pay_fixed=True)
+        rpt  = RiskReport({"5Y payer": s5, "10Y payer": s10}, rc)
+
+        col_r_a, col_r_b = st.columns(2)
+        with col_r_a:
+            st.subheader("Key-Rate DV01 Ladder")
+            ladder = rpt.dv01_ladder()
+            ladder_disp = ladder.copy()
+            ladder_disp["total_dv01_usd"] = ladder_disp["total_dv01_usd"].map("${:,.0f}".format)
+            st.dataframe(ladder_disp, use_container_width=True)
+
+        with col_r_b:
+            st.subheader("Parallel Shift P&L")
+            pnl_df = rpt.parallel_pnl(list(range(-150, 151, 25)))
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.plot(pnl_df["shift_bps"], pnl_df["pnl_usd"] / 1000, "b-o", markersize=4)
+            ax.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+            ax.axvline(0, color="grey", linewidth=0.8, linestyle=":")
+            ax.set_xlabel("Parallel Shift (bps)")
+            ax.set_ylabel("P&L ($000s)")
+            ax.set_title("Portfolio P&L vs Parallel Shift")
+            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+            st.pyplot(fig, use_container_width=True)
+            plt.close()
+
+        st.subheader("Stress Test Scenarios")
+        stress = rpt.stress_test()
+        stress["pnl_usd"] = stress["pnl_usd"].map("${:,.0f}".format)
+        st.dataframe(stress, use_container_width=True)
+
+        st.subheader("2Y × 10Y Scenario Grid ($000s)")
+        grid = rpt.scenario_grid([-75, -50, -25, 0, 25, 50, 75], [-75, -50, -25, 0, 25, 50, 75])
+        grid_disp = (grid / 1000).round(0)
+        st.dataframe(grid_disp.style.background_gradient(cmap="RdYlGn", axis=None),
+                     use_container_width=True)
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8: Curve Strategies
+# ─────────────────────────────────────────────────────────────────────────────
+with tab8:
+    st.header("Multi-Leg Curve Strategies")
+    st.markdown(
+        "Backtest DV01-neutral 2s10s steepener, flattener, and 2s5s10s butterfly "
+        "on synthetic yield curves. Compare Sharpe and cumulative P&L."
+    )
+    from models.curve_strategies import DV01NeutralSteepener, DV01NeutralFlattener, Butterfly, compare_strategies
+
+    col_cs1, col_cs2 = st.columns(2)
+    with col_cs1:
+        n_days  = st.slider("Simulation length (days)", 200, 1500, 600, 50, key="cs_n")
+        dy2_ann = st.slider("2Y yield total change (bps)", -300, 300, -200, 25, key="cs_dy2",
+                            help="Cumulative change in 2Y yield over the period")
+    with col_cs2:
+        dy10_ann = st.slider("10Y yield total change (bps)", -300, 300, -50, 25, key="cs_dy10",
+                              help="Cumulative change in 10Y yield over the period")
+        noise_bps = st.slider("Daily noise (bps)", 0, 15, 5, 1, key="cs_noise")
+
+    np.random.seed(42)
+    sim_idx = pd.date_range("2019-01-01", periods=n_days, freq="B")
+    y2_path  = 4.5 + np.linspace(0, dy2_ann / 100, n_days) + np.random.randn(n_days) * noise_bps / 100
+    y10_path = 4.0 + np.linspace(0, dy10_ann / 100, n_days) + np.random.randn(n_days) * noise_bps / 100
+    y5_path  = (y2_path + y10_path) / 2 + np.random.randn(n_days) * noise_bps / 200
+
+    sim_data = pd.DataFrame({"tsy_2y": y2_path, "tsy_5y": y5_path, "tsy_10y": y10_path}, index=sim_idx)
+
+    try:
+        res_st = DV01NeutralSteepener().run_backtest(sim_data)
+        res_fl = DV01NeutralFlattener().run_backtest(sim_data)
+        res_bt = Butterfly().run_backtest(sim_data)
+
+        cmp = compare_strategies({"Steepener": res_st, "Flattener": res_fl, "Butterfly": res_bt})
+        st.subheader("Strategy Comparison")
+        st.dataframe(cmp.style.format({"sharpe": "{:.3f}", "ann_return_bps": "{:.1f}",
+                                        "max_drawdown_bps": "{:.1f}", "total_pnl_bps": "{:.1f}",
+                                        "hit_rate": "{:.1%}", "n_days": "{:.0f}"}),
+                     use_container_width=True)
+
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+        for ax, (name, res) in zip(axes, [("Steepener", res_st), ("Flattener", res_fl), ("Butterfly", res_bt)]):
+            ax.plot(res["cumulative_pnl_bps"].values, linewidth=1.5)
+            ax.axhline(0, color="grey", linewidth=0.7, linestyle="--")
+            ax.set_title(f"{name}\nSharpe {cmp.loc[name, 'sharpe']:.2f} | "
+                         f"Total {cmp.loc[name, 'total_pnl_bps']:.0f}bps")
+            ax.set_xlabel("Days")
+            ax.set_ylabel("Cumulative P&L (bps)")
+            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+        st.subheader("Cumulative P&L")
+        st.pyplot(fig, use_container_width=True)
+        plt.close()
+
+        col_sc1, col_sc2 = st.columns(2)
+        with col_sc1:
+            st.subheader("2s10s Slope")
+            fig2, ax2 = plt.subplots(figsize=(5, 3))
+            slope = (sim_data["tsy_10y"] - sim_data["tsy_2y"]) * 100
+            ax2.plot(slope.values, color="navy", linewidth=1.2)
+            ax2.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.7)
+            ax2.set_ylabel("2s10s Slope (bps)")
+            ax2.set_title(f"Start: {slope.iloc[0]:.0f}bps → End: {slope.iloc[-1]:.0f}bps")
+            ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+            st.pyplot(fig2, use_container_width=True)
+            plt.close()
+        with col_sc2:
+            st.subheader("Butterfly (2s5s10s)")
+            fig3, ax3 = plt.subplots(figsize=(5, 3))
+            fly = (sim_data["tsy_5y"] - 0.5 * sim_data["tsy_2y"] - 0.5 * sim_data["tsy_10y"]) * 100
+            ax3.plot(fly.values, color="darkgreen", linewidth=1.2)
+            ax3.axhline(0, color="grey", linewidth=0.7, linestyle="--")
+            ax3.set_ylabel("Butterfly (bps)")
+            ax3.set_title(f"Curvature: start {fly.iloc[0]:.0f}bps → end {fly.iloc[-1]:.0f}bps")
+            ax3.spines["top"].set_visible(False); ax3.spines["right"].set_visible(False)
+            st.pyplot(fig3, use_container_width=True)
+            plt.close()
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 9: Term Premium Decomposition
+# ─────────────────────────────────────────────────────────────────────────────
+with tab9:
+    st.header("Term Premium Decomposition (ACM-style)")
+    st.markdown(
+        "Uses an AR(1) short-rate model to decompose the 10Y yield into:\n\n"
+        "**10Y yield = E[avg short rate over 10Y] + Term Premium**\n\n"
+        "The term premium compensates for duration risk, inflation uncertainty, and supply/demand. "
+        "ACM (2013) found it averaged +1.5% pre-GFC and turned negative during QE."
+    )
+    from models.term_premium import rolling_term_premium, term_premium_summary, fit_ar1
+
+    col_tp1, col_tp2 = st.columns(2)
+    with col_tp1:
+        short_rate_now = st.number_input("Current EFFR (%)", 0.0, 10.0, 4.33, 0.01, key="tp_sr")
+        y10_now        = st.number_input("Current 10Y yield (%)", 0.0, 10.0, 4.35, 0.01, key="tp_y10")
+        rho_override   = st.slider("AR(1) persistence (ρ)", 0.80, 0.9999, 0.98, 0.005,
+                                    key="tp_rho", help="Controls speed of mean reversion in short rate")
+    with col_tp2:
+        mu_override    = st.number_input("Long-run neutral rate (%)", 0.5, 6.0, 2.5, 0.1, key="tp_mu")
+        horizon        = st.selectbox("Term premium horizon", [5, 7, 10, 15, 20, 30], index=2, key="tp_h")
+
+    from models.term_premium import AR1Params, expected_avg_short_rate, term_premium
+    params      = AR1Params(mu=mu_override/100, rho=rho_override, sigma=0.005)
+    exp_avg     = expected_avg_short_rate(short_rate_now/100, params, horizon) * 100
+    tp_now      = y10_now - exp_avg
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("E[Avg Short Rate]", f"{exp_avg:.2f}%",
+                   delta=f"{exp_avg - short_rate_now:.2f}% vs today")
+    col_m2.metric("Term Premium", f"{tp_now:.2f}%",
+                   delta="bullish signal" if tp_now > 0.5 else ("neutral" if tp_now > 0 else "negative"))
+    col_m3.metric("Implied r*", f"{mu_override:.2f}%",
+                   delta=f"{mu_override - short_rate_now:.2f}% gap vs EFFR")
+
+    # Sensitivity: TP vs short-rate path
+    st.subheader("Term Premium Sensitivity")
+    col_tpa, col_tpb = st.columns(2)
+    with col_tpa:
+        fig_tp, ax_tp = plt.subplots(figsize=(5.5, 4))
+        sr_range = np.linspace(1.0, 7.0, 80)
+        tps = [y10_now - expected_avg_short_rate(sr/100, params, horizon)*100 for sr in sr_range]
+        ax_tp.plot(sr_range, tps, "b-", linewidth=2)
+        ax_tp.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+        ax_tp.axvline(short_rate_now, color="red", linewidth=1.2, linestyle="--",
+                       label=f"Current EFFR {short_rate_now:.2f}%")
+        ax_tp.scatter([short_rate_now], [tp_now], color="red", s=60, zorder=5)
+        ax_tp.set_xlabel("Current Short Rate (%)")
+        ax_tp.set_ylabel("Term Premium (%)")
+        ax_tp.set_title(f"{horizon}Y Term Premium vs Short Rate")
+        ax_tp.legend(fontsize=9)
+        ax_tp.spines["top"].set_visible(False); ax_tp.spines["right"].set_visible(False)
+        st.pyplot(fig_tp, use_container_width=True)
+        plt.close()
+
+    with col_tpb:
+        # AR(1) expected path
+        from models.term_premium import short_rate_expectations
+        path = short_rate_expectations(short_rate_now/100, params, horizon, freq=12) * 100
+        fig_path, ax_path = plt.subplots(figsize=(5.5, 4))
+        t_ax = np.linspace(0, horizon, len(path))
+        ax_path.plot(t_ax, path, "b-", linewidth=2, label="E[short rate]")
+        ax_path.axhline(mu_override, color="green", linewidth=1.0, linestyle="--",
+                         alpha=0.8, label=f"Long-run r* = {mu_override:.1f}%")
+        ax_path.axhline(y10_now, color="navy", linewidth=1.2, linestyle=":",
+                         label=f"10Y yield = {y10_now:.2f}%")
+        ax_path.fill_between(t_ax, path, y10_now, alpha=0.15,
+                               color="green" if tp_now > 0 else "red",
+                               label=f"TP = {tp_now:.2f}%")
+        ax_path.set_xlabel("Years ahead")
+        ax_path.set_ylabel("Rate (%)")
+        ax_path.set_title("AR(1) Expected Short Rate Path")
+        ax_path.legend(fontsize=9)
+        ax_path.spines["top"].set_visible(False); ax_path.spines["right"].set_visible(False)
+        st.pyplot(fig_path, use_container_width=True)
+        plt.close()
+
+    with st.expander("Methodology note"):
+        st.markdown("""
+**ACM (2013) approach (simplified)**
+
+Adrian, Crump & Moench (2013) decompose the n-period yield into:
+$$y_t^{(n)} = \\mathbb{E}_t\\left[\\frac{1}{n}\\sum_{h=0}^{n-1} r_{t+h}\\right] + TP_t^{(n)}$$
+
+We approximate $\\mathbb{E}[\\text{avg } r]$ using an AR(1) model for the short rate:
+$$r_{t+1} = \\mu(1-\\rho) + \\rho r_t + \\varepsilon_t$$
+
+The closed-form expectation is:
+$$\\mathbb{E}[\\text{avg } r] = \\mu + (r_0 - \\mu)\\frac{1 - \\rho^n}{n(1-\\rho)}$$
+
+**Limitation:** This is a 1-factor model; the full ACM model uses 5 principal components of
+the yield curve as risk factors and estimates risk prices via no-arbitrage constraints.
+Our approach provides an intuitive decomposition but will differ from the NY Fed's published ACM estimates.
+        """)
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 114 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 154 tests ✅ | Sharpe 0.282 OOS"
 )
