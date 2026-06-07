@@ -30,3 +30,6 @@ data/*.pkl
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code internal state
+.claude/
