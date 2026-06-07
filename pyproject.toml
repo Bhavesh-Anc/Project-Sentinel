@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "project-sentinel"
+version         = "0.2.0"
+description     = "US Rates & SOFR Pricing Engine — walk-forward validated macro signal framework"
+readme          = "README.md"
+license         = { text = "MIT" }
+requires-python = ">=3.10"
+authors         = [{ name = "Bhavesh Anchalia", email = "anchaliabhavesh1@gmail.com" }]
+keywords        = ["sofr", "rates", "fixed-income", "quant-finance", "ois", "taylor-rule", "nelson-siegel"]
+classifiers     = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "Topic :: Office/Business :: Financial",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+    "matplotlib>=3.7.0",
+    "python-dateutil>=2.8.0",
+    "statsmodels>=0.14.0",
+    "scikit-learn>=1.3.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+api        = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
+data       = ["fredapi>=0.5.1", "requests>=2.28.0"]
+dashboard  = ["streamlit>=1.28.0"]
+notebooks  = ["jupyter>=1.0.0", "ipywidgets>=8.0.0", "ipykernel>=6.0.0"]
+paper      = ["reportlab>=4.0.0"]
+dev        = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "httpx>=0.24.0"]
+all        = [
+    "fastapi>=0.110.0", "uvicorn[standard]>=0.27.0",
+    "fredapi>=0.5.1", "requests>=2.28.0",
+    "streamlit>=1.28.0",
+    "jupyter>=1.0.0", "ipywidgets>=8.0.0",
+    "reportlab>=4.0.0",
+    "pytest>=7.0.0", "pytest-cov>=4.0.0", "httpx>=0.24.0",
+]
+
+[project.scripts]
+sentinel-api       = "api.main:app"
+sentinel-dashboard = "dashboard.app:main"
+
+[project.urls]
+Repository = "https://github.com/bhavesh-anc/project-sentinel"
+Paper      = "https://ssrn.com/abstract=[TBD]"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["sofr_engine*", "models*", "backtesting*", "visualisation*", "api*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+addopts      = "-v --tb=short"
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+source  = ["sofr_engine", "models", "backtesting"]
+omit    = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
