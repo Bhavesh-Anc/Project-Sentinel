@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 154 passing ✅")
+    st.markdown("**Tests:** 226 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -59,6 +59,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "⚠️ Risk & Scenarios",
     "📉 Curve Strategies",
     "📈 Term Premium",
+    "🔬 PCA Factors",
+    "🔄 Carry & Roll-Down",
 ])
 
 
@@ -780,6 +782,225 @@ $$\\mathbb{E}[\\text{avg } r] = \\mu + (r_0 - \\mu)\\frac{1 - \\rho^n}{n(1-\\rho
 the yield curve as risk factors and estimates risk prices via no-arbitrage constraints.
 Our approach provides an intuitive decomposition but will differ from the NY Fed's published ACM estimates.
         """)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 10: PCA Yield Curve Factors
+# ─────────────────────────────────────────────────────────────────────────────
+with tab10:
+    st.header("PCA Yield Curve Factor Analysis")
+    st.markdown(
+        "The first three principal components explain >99% of historical yield curve variation:\n\n"
+        "- **PC1 (~90%):** Level — parallel shift\n"
+        "- **PC2 (~5%):** Slope — 2s10s tilt\n"
+        "- **PC3 (~1%):** Curvature — butterfly (belly vs wings)"
+    )
+    from models.pca_factors import YieldCurvePCA, classify_pc_regime
+
+    st.subheader("Synthetic PCA Demo")
+    st.info(
+        "This demo fits PCA on a synthetic yield curve dataset (300 business days) "
+        "with a dominant level factor and smaller slope/curvature components. "
+        "Connect FRED data to run on real Treasury yields."
+    )
+
+    col_pca1, col_pca2 = st.columns([1, 2])
+    with col_pca1:
+        n_components = st.selectbox("Number of PCs", [2, 3, 4], index=1, key="pca_ncomp")
+        n_obs_pca    = st.slider("Simulated observations", 100, 500, 300, 50, key="pca_nobs")
+        seed_pca     = st.number_input("Random seed", 1, 999, 42, key="pca_seed")
+
+    # Generate synthetic data
+    rng = np.random.default_rng(int(seed_pca))
+    tenors_pca = [2.0, 3.0, 5.0, 7.0, 10.0, 30.0]
+    level  = np.cumsum(rng.normal(0, 0.012, n_obs_pca))
+    slope  = np.cumsum(rng.normal(0, 0.004, n_obs_pca))
+    curve_factor = np.cumsum(rng.normal(0, 0.001, n_obs_pca))
+    idio   = rng.normal(0, 0.001, (n_obs_pca, len(tenors_pca)))
+    base   = np.array([3.5, 3.7, 3.9, 4.1, 4.3, 4.5])
+    slope_load  = np.array([-1.2, -0.8, -0.3, 0.1, 0.5, 1.0]) * 0.3
+    curve_load  = np.array([0.3, 0.0, -0.4, -0.3, 0.0, 0.5]) * 0.2
+    yields_pca = (base
+                  + level[:, None]
+                  + slope[:, None] * slope_load[None, :]
+                  + curve_factor[:, None] * curve_load[None, :]
+                  + idio)
+    dates_pca = pd.date_range("2021-01-01", periods=n_obs_pca, freq="B")
+    cols_pca  = ["tsy_2y", "tsy_3y", "tsy_5y", "tsy_7y", "tsy_10y", "tsy_30y"]
+    yield_df_pca = pd.DataFrame(yields_pca, index=dates_pca, columns=cols_pca)
+
+    try:
+        pca = YieldCurvePCA(n_components=int(n_components)).fit(yield_df_pca, tenors_yrs=tenors_pca)
+
+        # Explained variance table
+        ev_tbl = pca.explained_variance_table()
+        with col_pca2:
+            st.dataframe(ev_tbl.style.background_gradient(cmap="Blues", subset=["explained_pct"]),
+                         use_container_width=True)
+
+        # Loadings plot
+        col_pca_a, col_pca_b = st.columns(2)
+        with col_pca_a:
+            st.subheader("PC Loadings (Eigenvectors)")
+            ld = pca.loadings_df()
+            fig_ld, ax_ld = plt.subplots(figsize=(5.5, 4))
+            colors = ["steelblue", "darkorange", "green", "red"]
+            for i, pc in enumerate(ld.columns):
+                ax_ld.plot(tenors_pca, ld[pc].values, "o-",
+                           color=colors[i], linewidth=2, markersize=5, label=pc)
+            ax_ld.axhline(0, color="grey", linewidth=0.7, linestyle="--")
+            ax_ld.set_xlabel("Tenor (years)")
+            ax_ld.set_ylabel("Loading")
+            ax_ld.set_title("PC Loadings across Tenors")
+            ax_ld.legend(fontsize=9)
+            ax_ld.spines["top"].set_visible(False)
+            ax_ld.spines["right"].set_visible(False)
+            st.pyplot(fig_ld, use_container_width=True)
+            plt.close()
+
+        with col_pca_b:
+            st.subheader("PC Scores over Time")
+            scores = pca.transform(yield_df_pca)
+            fig_sc, ax_sc = plt.subplots(figsize=(5.5, 4))
+            for i, pc in enumerate(scores.columns):
+                ax_sc.plot(scores.index, scores[pc], color=colors[i], linewidth=1.2,
+                           alpha=0.85, label=pc)
+            ax_sc.axhline(0, color="grey", linewidth=0.6, linestyle="--")
+            ax_sc.set_xlabel("Date")
+            ax_sc.set_ylabel("Score")
+            ax_sc.set_title("PC Scores (Level / Slope / Curvature)")
+            ax_sc.legend(fontsize=9)
+            ax_sc.spines["top"].set_visible(False)
+            ax_sc.spines["right"].set_visible(False)
+            st.pyplot(fig_sc, use_container_width=True)
+            plt.close()
+
+        # Regime classification
+        st.subheader("PC Regime Classification")
+        regime = classify_pc_regime(scores)
+        regime_counts = regime.value_counts()
+        col_r1, col_r2 = st.columns([1, 2])
+        with col_r1:
+            st.dataframe(regime_counts.rename("Days").to_frame(), use_container_width=True)
+        with col_r2:
+            fig_regime, ax_regime = plt.subplots(figsize=(8, 2.5))
+            regime_num = regime.map(
+                {"high_rates": 2, "low_rates": -2, "steep_curve": 1, "flat_curve": -1, "neutral": 0}
+            )
+            ax_regime.fill_between(regime.index, regime_num, 0, alpha=0.5, color="steelblue")
+            ax_regime.set_title("Regime Timeline (PC-based)")
+            ax_regime.set_yticks([-2, -1, 0, 1, 2])
+            ax_regime.set_yticklabels(["low_rates", "flat_curve", "neutral", "steep_curve", "high_rates"],
+                                       fontsize=7)
+            ax_regime.spines["top"].set_visible(False)
+            ax_regime.spines["right"].set_visible(False)
+            st.pyplot(fig_regime, use_container_width=True)
+            plt.close()
+
+    except Exception as e:
+        st.error(f"PCA error: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 11: Carry & Roll-Down
+# ─────────────────────────────────────────────────────────────────────────────
+with tab11:
+    st.header("Carry & Roll-Down Analytics")
+    st.markdown(
+        "**Carry** = income from holding a position (par rate − overnight financing rate)\n\n"
+        "**Roll-Down** = P&L from 'sliding' along the yield curve as the bond ages\n\n"
+        "**Total Return** = Carry + Roll-Down (static curve assumption)\n\n"
+        "**Breakeven** = max adverse yield move before total return turns negative"
+    )
+    from models.carry_rolldown import carry_rolldown_table, carry_rolldown_matrix, steepener_carry
+    from sofr_engine.bootstrap import flat_sofr_curve
+
+    col_cr1, col_cr2 = st.columns(2)
+    with col_cr1:
+        sofr_cr  = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="cr_sofr") / 100
+        dt_month = st.selectbox("Holding horizon", [1, 3, 6, 12], index=0, key="cr_dt")
+    with col_cr2:
+        slope_bp  = st.slider("Curve slope vs flat (bps added at 30Y)", -200, 300, 100, 10,
+                               key="cr_slope",
+                               help="Adds a linear slope to the flat SOFR curve: 0 bps at 1Y → slope_bp at 30Y")
+
+    # Build a slightly sloped curve
+    from sofr_engine.curve import DiscountCurve
+    times_cr  = np.array([0.01, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0])
+    slope_add = (slope_bp / 10_000) * times_cr / 30.0   # linear ramp
+    rates_cr  = sofr_cr + slope_add
+    dfs_cr    = np.exp(-rates_cr * times_cr)
+    from datetime import date as _date
+    curve_cr  = DiscountCurve(_date.today(), times_cr, dfs_cr)
+
+    try:
+        dt_yrs = dt_month / 12.0
+        tbl_cr = carry_rolldown_table(curve_cr, dt_years=dt_yrs).dropna()
+
+        st.subheader("Carry + Roll-Down Table")
+        styled = tbl_cr.style.background_gradient(
+            cmap="RdYlGn", subset=["total_return_bps", "carry_bps", "rolldown_bps"]
+        ).format("{:.3f}")
+        st.dataframe(styled, use_container_width=True)
+
+        col_cr_a, col_cr_b = st.columns(2)
+        with col_cr_a:
+            st.subheader("Total Return by Tenor")
+            fig_cr1, ax_cr1 = plt.subplots(figsize=(5.5, 4))
+            ax_cr1.bar(tbl_cr.index.astype(str), tbl_cr["carry_bps"],
+                       label="Carry", color="steelblue", alpha=0.8)
+            ax_cr1.bar(tbl_cr.index.astype(str), tbl_cr["rolldown_bps"],
+                       bottom=tbl_cr["carry_bps"], label="Roll-Down", color="darkorange", alpha=0.8)
+            ax_cr1.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+            ax_cr1.set_xlabel("Tenor (years)")
+            ax_cr1.set_ylabel(f"bps / {dt_month}M")
+            ax_cr1.set_title(f"Carry + Roll-Down ({dt_month}M horizon)")
+            ax_cr1.legend(fontsize=9)
+            ax_cr1.spines["top"].set_visible(False)
+            ax_cr1.spines["right"].set_visible(False)
+            st.pyplot(fig_cr1, use_container_width=True)
+            plt.close()
+
+        with col_cr_b:
+            st.subheader("2s10s Steepener Carry Decomposition")
+            sc = steepener_carry(curve_cr, short_tenor=2.0, long_tenor=10.0, dt_years=dt_yrs)
+            labels  = ["Carry (2Y rcv)", "Carry (10Y pay)", "Net Carry",
+                       "RD (2Y)", "RD (10Y)", "Net RD", "Net Total"]
+            values  = [sc["carry_2y_bps"], -sc["carry_10y_bps"], sc["net_carry_bps"],
+                       sc["rolldown_2y_bps"], -sc["rolldown_10y_bps"], sc["net_rolldown_bps"],
+                       sc["net_total_bps"]]
+            colors_sc = ["steelblue" if v >= 0 else "tomato" for v in values]
+            fig_sc2, ax_sc2 = plt.subplots(figsize=(5.5, 4))
+            bars = ax_sc2.barh(labels, values, color=colors_sc, edgecolor="white")
+            ax_sc2.axvline(0, color="grey", linewidth=0.8, linestyle="--")
+            ax_sc2.set_xlabel(f"bps / {dt_month}M")
+            ax_sc2.set_title("2s10s DV01-Neutral Steepener")
+            for bar, val in zip(bars, values):
+                ax_sc2.text(val + (0.05 if val >= 0 else -0.05), bar.get_y() + bar.get_height()/2,
+                             f"{val:.2f}", va="center", ha="left" if val >= 0 else "right", fontsize=8)
+            ax_sc2.spines["top"].set_visible(False)
+            ax_sc2.spines["right"].set_visible(False)
+            st.pyplot(fig_sc2, use_container_width=True)
+            plt.close()
+
+        # Carry/rolldown matrix
+        st.subheader("Total Return Matrix: Tenor × Horizon")
+        from models.carry_rolldown import carry_rolldown_matrix
+        mat = carry_rolldown_matrix(
+            curve_cr,
+            tenors=[2.0, 5.0, 7.0, 10.0, 20.0, 30.0],
+            horizons=[1/52, 1/12, 3/12, 6/12, 1.0],
+            component="total_return_bps",
+        )
+        st.dataframe(
+            mat.style.background_gradient(cmap="RdYlGn").format("{:.2f}"),
+            use_container_width=True,
+        )
+        st.caption("Values in bps. Green = positive total return (carry + roll-down). "
+                   "Assumes static yield curve over the holding horizon.")
+
+    except Exception as e:
+        st.error(f"Carry analytics error: {e}")
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
