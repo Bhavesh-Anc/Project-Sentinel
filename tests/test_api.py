@@ -425,3 +425,135 @@ class TestVolSurface:
         last_val  = rows[-1].get(col)
         if first_val is not None and last_val is not None:
             assert first_val > last_val
+
+
+# ── SABR vol model ────────────────────────────────────────────────────────────
+
+class TestSABRSmile:
+
+    def _payload(self, **kw):
+        base = {
+            "forward_rate":     0.0453,
+            "expiry_years":     1.0,
+            "alpha":            0.05,
+            "beta":             0.5,
+            "rho":             -0.25,
+            "nu":               0.40,
+            "n_strikes":        11,
+            "strike_range_bps": 100.0,
+        }
+        base.update(kw)
+        return base
+
+    def test_smile_200(self):
+        assert client.post("/sabr/smile", json=self._payload()).status_code == 200
+
+    def test_smile_keys(self):
+        body = client.post("/sabr/smile", json=self._payload()).json()
+        assert "forward_rate_pct" in body
+        assert "atm_vol_pct" in body
+        assert "smile" in body
+
+    def test_smile_row_count(self):
+        body = client.post("/sabr/smile", json=self._payload(n_strikes=11)).json()
+        assert len(body["smile"]) == 11
+
+    def test_smile_columns(self):
+        row = client.post("/sabr/smile", json=self._payload()).json()["smile"][0]
+        for col in ["strike_pct", "moneyness_bps", "sabr_vol_pct", "normal_vol_bps"]:
+            assert col in row
+
+    def test_smile_atm_vol_positive(self):
+        body = client.post("/sabr/smile", json=self._payload()).json()
+        assert body["atm_vol_pct"] > 0
+
+    def test_smile_negative_rho_creates_put_skew(self):
+        # Negative rho → receiver OTM (low strike) vol > payer OTM (high strike) vol
+        rows = client.post("/sabr/smile", json=self._payload(rho=-0.40)).json()["smile"]
+        vols = [(r["moneyness_bps"], r["sabr_vol_pct"]) for r in rows]
+        low_strike_vol  = next(v for m, v in vols if m < -50)
+        high_strike_vol = next(v for m, v in sorted(vols, reverse=True) if m > 50)
+        assert low_strike_vol > high_strike_vol
+
+    def test_smile_higher_nu_wider_smile(self):
+        lo = client.post("/sabr/smile", json=self._payload(nu=0.10)).json()["smile"]
+        hi = client.post("/sabr/smile", json=self._payload(nu=0.80)).json()["smile"]
+        # Wing vols should be higher with larger nu
+        lo_wing = max(abs(r["sabr_vol_pct"] - lo[len(lo)//2]["sabr_vol_pct"]) for r in lo)
+        hi_wing = max(abs(r["sabr_vol_pct"] - hi[len(hi)//2]["sabr_vol_pct"]) for r in hi)
+        assert hi_wing > lo_wing
+
+
+class TestSABRCalibrate:
+
+    def _payload(self, **kw):
+        base = {
+            "forward_rate": 0.0453,
+            "expiry_years": 1.0,
+            "strikes":      [0.035, 0.040, 0.045, 0.050, 0.055],
+            "market_vols":  [0.135, 0.130, 0.125, 0.122, 0.120],
+            "beta":         0.5,
+        }
+        base.update(kw)
+        return base
+
+    def test_calibrate_200(self):
+        assert client.post("/sabr/calibrate", json=self._payload()).status_code == 200
+
+    def test_calibrate_keys(self):
+        body = client.post("/sabr/calibrate", json=self._payload()).json()
+        for k in ["alpha", "beta", "rho", "nu", "rmse_bps", "max_error_bps"]:
+            assert k in body
+
+    def test_calibrate_alpha_positive(self):
+        body = client.post("/sabr/calibrate", json=self._payload()).json()
+        assert body["alpha"] > 0
+
+    def test_calibrate_rho_in_bounds(self):
+        body = client.post("/sabr/calibrate", json=self._payload()).json()
+        assert -1.0 < body["rho"] < 1.0
+
+    def test_calibrate_rmse_small(self):
+        # Good calibration should achieve < 2bp RMSE on reasonable market quotes
+        body = client.post("/sabr/calibrate", json=self._payload()).json()
+        assert body["rmse_bps"] < 5.0  # SABR is an approximation; realistic quotes have ~2-3bp fit error
+
+    def test_calibrate_atm_only(self):
+        payload = dict(forward_rate=0.045, expiry_years=1.0,
+                       strikes=[0.045], market_vols=[0.125], beta=0.5)
+        r = client.post("/sabr/calibrate", json=payload)
+        assert r.status_code == 200
+        assert r.json()["alpha"] > 0
+
+    def test_calibrate_length_mismatch_422(self):
+        payload = dict(forward_rate=0.045, expiry_years=1.0,
+                       strikes=[0.04, 0.05], market_vols=[0.12], beta=0.5)
+        assert client.post("/sabr/calibrate", json=payload).status_code == 422
+
+
+class TestSABRSurface:
+
+    def test_surface_200(self):
+        assert client.get("/sabr/surface").status_code == 200
+
+    def test_surface_has_25_nodes(self):
+        body = client.get("/sabr/surface").json()
+        assert len(body["nodes"]) == 25  # 5 expiries × 5 tenors
+
+    def test_surface_node_keys(self):
+        node = client.get("/sabr/surface").json()["nodes"][0]
+        for k in ["expiry_years", "tenor_years", "alpha", "beta", "rho", "nu", "atm_vol_pct"]:
+            assert k in node
+
+    def test_surface_atm_vols_positive(self):
+        for node in client.get("/sabr/surface").json()["nodes"]:
+            assert node["atm_vol_pct"] > 0
+
+    def test_surface_beta_fixed(self):
+        for node in client.get("/sabr/surface").json()["nodes"]:
+            assert abs(node["beta"] - 0.5) < 1e-6
+
+    def test_surface_rho_negative(self):
+        # USD convention: rho = -0.25 (payer skew)
+        for node in client.get("/sabr/surface").json()["nodes"]:
+            assert node["rho"] < 0

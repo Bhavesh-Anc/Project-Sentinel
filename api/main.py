@@ -49,6 +49,9 @@ from models.fomc_probability import fedwatch_probabilities, fomc_prob_summary
 from models.macro_signals import composite_signal
 from models.carry_rolldown import carry_rolldown_table, steepener_carry
 from sofr_engine.swaption import Swaption, SwaptionVolSurface, price_swaption
+from sofr_engine.sabr import (
+    SABRParams, SABRSurface, sabr_implied_vol, sabr_vol_smile, calibrate_sabr,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -488,6 +491,118 @@ def vol_surface():
     return {
         "description": "ATM Black-76 implied vols (%). Rows = option expiry, cols = swap tenor.",
         "surface": df.reset_index().to_dict("records"),
+    }
+
+
+# ── SABR smile ─────────────────────────────────────────────────────────────────
+
+class SABRSmileRequest(BaseModel):
+    forward_rate:     float = Field(0.0453, description="Forward swap rate (decimal)")
+    expiry_years:     float = Field(1.0, ge=0.01, le=30.0, description="Option expiry in years")
+    alpha:            float = Field(0.05, gt=0.0, description="SABR alpha (initial vol)")
+    beta:             float = Field(0.5, ge=0.0, le=1.0, description="SABR beta (backbone)")
+    rho:              float = Field(-0.25, gt=-1.0, lt=1.0, description="SABR rho (skew)")
+    nu:               float = Field(0.40, ge=0.0, description="SABR nu (vol of vol)")
+    n_strikes:        int   = Field(21, ge=3, le=101, description="Number of strike points")
+    strike_range_bps: float = Field(200.0, gt=0.0, description="±range around ATM in bps")
+
+
+class SABRCalibrateRequest(BaseModel):
+    forward_rate:   float       = Field(0.0453, description="Forward swap rate (decimal)")
+    expiry_years:   float       = Field(1.0, ge=0.01, le=30.0)
+    strikes:        list[float] = Field(..., min_length=1, description="Strike rates (decimal)")
+    market_vols:    list[float] = Field(..., min_length=1, description="Market Black-76 vols (decimal)")
+    beta:           float       = Field(0.5, ge=0.0, le=1.0)
+
+
+@app.post("/sabr/smile", tags=["SABR Volatility"])
+def sabr_smile_endpoint(req: SABRSmileRequest):
+    """
+    Compute SABR vol smile across a strike grid given SABR parameters.
+    Returns strike_pct, moneyness_bps, sabr_vol_pct, and normal_vol_bps columns.
+    """
+    try:
+        params = SABRParams(alpha=req.alpha, beta=req.beta, rho=req.rho, nu=req.nu)
+        df = sabr_vol_smile(
+            F=req.forward_rate,
+            T=req.expiry_years,
+            params=params,
+            n_strikes=req.n_strikes,
+            strike_range_bps=req.strike_range_bps,
+        )
+        return {
+            "forward_rate_pct": round(req.forward_rate * 100, 6),
+            "expiry_years": req.expiry_years,
+            "atm_vol_pct": round(float(df.loc[df["moneyness_bps"].abs().idxmin(), "sabr_vol_pct"]), 4),
+            "smile": df.round(6).to_dict("records"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/sabr/calibrate", tags=["SABR Volatility"])
+def sabr_calibrate_endpoint(req: SABRCalibrateRequest):
+    """
+    Calibrate SABR parameters {alpha, rho, nu} to a set of (strike, vol) market quotes
+    with beta fixed. Returns calibrated parameters and vol fit quality (RMSE in bps).
+    """
+    if len(req.strikes) != len(req.market_vols):
+        raise HTTPException(status_code=422, detail="strikes and market_vols must have equal length")
+    try:
+        params = calibrate_sabr(
+            F=req.forward_rate,
+            T=req.expiry_years,
+            strikes=req.strikes,
+            market_vols=req.market_vols,
+            beta=req.beta,
+        )
+        # Compute fit quality
+        fitted_vols = [sabr_implied_vol(req.forward_rate, k, req.expiry_years, params) for k in req.strikes]
+        residuals   = [abs(fv - mv) * 10000 for fv, mv in zip(fitted_vols, req.market_vols)]
+        rmse_bps    = float(np.sqrt(np.mean([r**2 for r in residuals])))
+        return {
+            "alpha": round(params.alpha, 8),
+            "beta":  round(params.beta,  6),
+            "rho":   round(params.rho,   8),
+            "nu":    round(params.nu,    8),
+            "rmse_bps": round(rmse_bps, 4),
+            "max_error_bps": round(max(residuals), 4),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/sabr/surface", tags=["SABR Volatility"])
+def sabr_surface_endpoint():
+    """
+    Return the SABR-calibrated vol surface anchored to the typical ATM grid.
+    Uses USD convention: beta=0.5, rho=-0.25, nu=0.40. Returns calibrated alpha
+    per grid node and the ATM vol reproduced by SABR.
+    """
+    atm_surf  = SwaptionVolSurface.typical_market()
+    curve     = _flat_curve(0.0453)
+    sabr_surf = SABRSurface.calibrate_from_atm_surface(atm_surf, curve)
+    rows = []
+    for i, exp in enumerate(sabr_surf._expiries):
+        for j, ten in enumerate(sabr_surf._tenors):
+            p = sabr_surf._params[i][j]
+            # Approximate ATM forward from curve; SABR ATM vol is self-consistent
+            F = float(curve.par_ois_rate(float(exp) + float(ten) / 2.0))
+            if F <= 0:
+                F = 0.045
+            atm_vol = sabr_implied_vol(F, F, float(exp), p) * 100.0
+            rows.append({
+                "expiry_years": float(exp),
+                "tenor_years":  float(ten),
+                "alpha":      round(p.alpha, 6),
+                "beta":       round(p.beta,  4),
+                "rho":        round(p.rho,   4),
+                "nu":         round(p.nu,    4),
+                "atm_vol_pct": round(atm_vol, 4),
+            })
+    return {
+        "description": "SABR params calibrated to ATM surface (USD convention: beta=0.5, rho=-0.25, nu=0.40)",
+        "nodes": rows,
     }
 
 

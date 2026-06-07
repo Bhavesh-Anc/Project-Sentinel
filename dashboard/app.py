@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 317 passing ✅")
+    st.markdown("**Tests:** 390 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -62,6 +62,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.t
     "🔬 PCA Factors",
     "🔄 Carry & Roll-Down",
     "🎰 Swaptions",
+    "📐 SABR Smile",
 ])
 
 
@@ -1140,9 +1141,113 @@ with tab12:
     plt.close()
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 13: SABR Vol Smile
+# ─────────────────────────────────────────────────────────────────────────────
+with tab13:
+    st.header("SABR Volatility Smile")
+    st.markdown(
+        "The **SABR model** (Hagan et al. 2002) is the industry standard for swaption "
+        "vol smile/skew. It models the forward rate and its vol as correlated processes, "
+        "generating a realistic skewed vol surface across strikes."
+    )
+
+    col_l, col_r = st.columns([1, 2])
+    with col_l:
+        st.subheader("SABR Parameters")
+        sabr_F   = st.number_input("Forward Rate (%)", min_value=0.5, max_value=15.0,
+                                    value=4.53, step=0.05) / 100.0
+        sabr_T   = st.selectbox("Expiry", [0.5, 1.0, 2.0, 5.0, 10.0], index=1)
+        sabr_alp = st.slider("Alpha (α) — vol level", 0.01, 0.20, 0.05, 0.005)
+        sabr_bet = st.slider("Beta (β) — backbone", 0.0, 1.0, 0.5, 0.1)
+        sabr_rho = st.slider("Rho (ρ) — skew", -0.90, 0.90, -0.25, 0.05)
+        sabr_nu  = st.slider("Nu (ν) — vol of vol", 0.01, 1.50, 0.40, 0.05)
+        strike_range = st.slider("Strike range (±bps)", 50, 300, 150, 25)
+
+    with col_r:
+        try:
+            from sofr_engine.sabr import SABRParams, sabr_vol_smile
+
+            params = SABRParams(alpha=sabr_alp, beta=sabr_bet, rho=sabr_rho, nu=sabr_nu)
+            smile_df = sabr_vol_smile(
+                F=sabr_F, T=sabr_T, params=params,
+                n_strikes=41, strike_range_bps=float(strike_range),
+            )
+
+            fig_sm, ax_sm = plt.subplots(figsize=(7, 4))
+            ax_sm.plot(smile_df["moneyness_bps"], smile_df["sabr_vol_pct"],
+                       color=BLUE, linewidth=2.5, label="SABR Black-76 vol")
+            ax_sm.axvline(0, color="gray", linestyle="--", linewidth=1, label="ATM")
+            atm_vol = float(smile_df.loc[smile_df["moneyness_bps"].abs().idxmin(), "sabr_vol_pct"])
+            ax_sm.axhline(atm_vol, color="gray", linestyle=":", linewidth=0.8)
+            ax_sm.set_xlabel("Moneyness (bps from ATM)")
+            ax_sm.set_ylabel("Implied Vol (%)")
+            ax_sm.set_title(f"SABR Vol Smile — {sabr_T}Y Expiry, F = {sabr_F*100:.2f}%")
+            ax_sm.legend(fontsize=9)
+            ax_sm.spines["top"].set_visible(False)
+            ax_sm.spines["right"].set_visible(False)
+            st.pyplot(fig_sm, use_container_width=True)
+            plt.close()
+
+            # Normal vol panel
+            st.subheader("Normal (Bachelier) Vol in bps")
+            fig_n, ax_n = plt.subplots(figsize=(7, 3))
+            ax_n.fill_between(smile_df["moneyness_bps"], smile_df["normal_vol_bps"],
+                               alpha=0.35, color=GREEN)
+            ax_n.plot(smile_df["moneyness_bps"], smile_df["normal_vol_bps"],
+                      color=GREEN, linewidth=2)
+            ax_n.axvline(0, color="gray", linestyle="--", linewidth=1)
+            ax_n.set_xlabel("Moneyness (bps from ATM)")
+            ax_n.set_ylabel("Normal vol (bps)")
+            ax_n.set_title("Bachelier (Normal) Vol — σ_N ≈ σ_Black × √(FK)")
+            ax_n.spines["top"].set_visible(False)
+            ax_n.spines["right"].set_visible(False)
+            st.pyplot(fig_n, use_container_width=True)
+            plt.close()
+
+        except Exception as e:
+            st.error(f"SABR error: {e}")
+
+    # SABR surface calibrated to ATM grid
+    st.subheader("SABR Surface — Calibrated to ATM Quotes")
+    st.markdown(
+        "Fixing **β = 0.5, ρ = −0.25, ν = 0.40** (USD swaption convention), "
+        "α is calibrated at each grid node to match the observed ATM vol exactly."
+    )
+    try:
+        from sofr_engine.sabr import SABRSurface, sabr_implied_vol
+        from datetime import date as _date
+
+        _sabr_curve = flat_sofr_curve(_date.today(), 0.0453)
+        _atm_surf   = SwaptionVolSurface.typical_market()
+        _sabr_surf  = SABRSurface.calibrate_from_atm_surface(_atm_surf, _sabr_curve)
+
+        alpha_grid = [[_sabr_surf._params[i][j].alpha * 100
+                       for j in range(len(_sabr_surf._tenors))]
+                      for i in range(len(_sabr_surf._expiries))]
+        import pandas as _pd
+        expiry_labels_s = [SwaptionVolSurface._label_years(e) for e in _sabr_surf._expiries]
+        tenor_labels_s  = [SwaptionVolSurface._label_years(t) for t in _sabr_surf._tenors]
+        alpha_df = _pd.DataFrame(alpha_grid, index=expiry_labels_s, columns=tenor_labels_s)
+        alpha_df.index.name   = "expiry"
+        alpha_df.columns.name = "tenor"
+
+        st.dataframe(
+            alpha_df.style.background_gradient(cmap="Blues").format("{:.2f}%"),
+            use_container_width=True,
+        )
+        st.caption("Calibrated α (%) per grid node. Higher α → higher overall vol level.")
+
+    except Exception as e:
+        st.error(f"SABR surface error: {e}")
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 317 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 390 tests ✅ | Sharpe 0.282 OOS"
 )
+
+# Already written above — SABR tab appended below footer line
