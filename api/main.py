@@ -48,6 +48,7 @@ from models.taylor_rule import compute_taylor_rule, TaylorRuleConfig
 from models.fomc_probability import fedwatch_probabilities, fomc_prob_summary
 from models.macro_signals import composite_signal
 from models.carry_rolldown import carry_rolldown_table, steepener_carry
+from sofr_engine.swaption import Swaption, SwaptionVolSurface, price_swaption
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -153,6 +154,16 @@ class FOMCRequest(BaseModel):
 class CarryRequest(BaseModel):
     sofr_on: float = Field(0.0358, description="Flat curve level")
     dt_months: float = Field(1.0, description="Holding period in months")
+
+
+class SwaptionRequest(BaseModel):
+    sofr_on:          float = Field(0.0433, description="Flat curve level (decimal)")
+    expiry_years:     float = Field(1.0,  ge=0.01, le=30.0, description="Option expiry in years")
+    swap_tenor_years: float = Field(5.0,  ge=0.25, le=30.0, description="Underlying swap tenor in years")
+    strike:           float | None = Field(None, description="Fixed rate (decimal); None = ATM")
+    notional:         float = Field(10_000_000.0, description="Notional in USD")
+    swaption_type:    Literal["payer", "receiver"] = "payer"
+    vol:              float = Field(0.20, ge=0.001, le=2.0, description="Black-76 implied vol (decimal)")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -447,6 +458,36 @@ def convexity_schedule(
         "sigma_pct": sigma * 100,
         "mean_reversion_pct": mean_rev * 100,
         "schedule": rows,
+    }
+
+
+@app.post("/price/swaption", tags=["Pricing"])
+def price_swaption_endpoint(req: SwaptionRequest):
+    """Price a European SOFR swaption via Black-76 and return full analytics."""
+    try:
+        curve = _flat_curve(req.sofr_on)
+        result = price_swaption(
+            curve,
+            expiry_years=req.expiry_years,
+            swap_tenor_years=req.swap_tenor_years,
+            strike=req.strike,
+            notional=req.notional,
+            swaption_type=req.swaption_type,
+            vol=req.vol,
+        )
+        return {k: round(v, 6) if isinstance(v, float) else v for k, v in result.items()}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/vol/surface", tags=["Analytics"])
+def vol_surface():
+    """Return a typical 2024-vintage ATM swaption vol surface (Black-76 implied vols)."""
+    surf = SwaptionVolSurface.typical_market()
+    df   = surf.to_dataframe()
+    return {
+        "description": "ATM Black-76 implied vols (%). Rows = option expiry, cols = swap tenor.",
+        "surface": df.reset_index().to_dict("records"),
     }
 
 

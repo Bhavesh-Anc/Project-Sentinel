@@ -49,7 +49,7 @@ with st.sidebar:
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -61,6 +61,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "📈 Term Premium",
     "🔬 PCA Factors",
     "🔄 Carry & Roll-Down",
+    "🎰 Swaptions",
 ])
 
 
@@ -1003,9 +1004,145 @@ with tab11:
         st.error(f"Carry analytics error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 12: Swaption Pricing & Vol Surface
+# ─────────────────────────────────────────────────────────────────────────────
+with tab12:
+    st.header("European Swaption Pricing (Black-76)")
+    st.markdown(
+        "A swaption is an option to enter a fixed/floating interest rate swap at expiry.\n\n"
+        "- **Payer swaption**: right to pay fixed / receive floating (profits if rates rise)\n"
+        "- **Receiver swaption**: right to receive fixed / pay floating (profits if rates fall)\n"
+        "- Priced via **Black-76**: `PV = N·A·[S·Φ(d₁) − K·Φ(d₂)]` for payer"
+    )
+    from sofr_engine.swaption import Swaption, SwaptionVolSurface, price_swaption
+    from sofr_engine.bootstrap import flat_sofr_curve as _flat_sofr_curve
+
+    col_sw1, col_sw2, col_sw3 = st.columns(3)
+    with col_sw1:
+        sw_sofr    = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="sw_sofr") / 100
+        sw_expiry  = st.selectbox("Option expiry (years)", [0.5, 1.0, 2.0, 5.0, 10.0], index=1, key="sw_exp")
+        sw_tenor   = st.selectbox("Swap tenor (years)", [1.0, 2.0, 5.0, 10.0, 30.0], index=2, key="sw_ten")
+    with col_sw2:
+        sw_type    = st.radio("Swaption type", ["payer", "receiver"], index=0, key="sw_type")
+        sw_notional = st.number_input("Notional ($M)", 1.0, 1000.0, 10.0, 1.0, key="sw_not") * 1_000_000
+    with col_sw3:
+        sw_vol     = st.slider("Implied vol (%)", 5.0, 60.0, 20.0, 0.5, key="sw_vol") / 100
+        sw_atm     = st.checkbox("ATM strike (forward rate)", value=True, key="sw_atm")
+        sw_strike  = None
+        if not sw_atm:
+            sw_strike_pct = st.number_input("Strike (%)", 1.0, 10.0, 4.5, 0.05, key="sw_k")
+            sw_strike = sw_strike_pct / 100
+
+    try:
+        from datetime import date as _date
+        curve_sw = _flat_sofr_curve(_date.today(), sw_sofr)
+        result = price_swaption(
+            curve_sw, float(sw_expiry), float(sw_tenor),
+            strike=sw_strike, notional=sw_notional,
+            swaption_type=sw_type, vol=sw_vol,
+        )
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Black-76 PV", f"${result['black_pv']:,.0f}")
+        col_m2.metric("Intrinsic Value", f"${result['intrinsic_value']:,.0f}")
+        col_m3.metric("Time Value", f"${result['time_value']:,.0f}")
+        col_m4.metric("Moneyness", f"{result['moneyness_bps']:.1f} bps")
+
+        col_m5, col_m6, col_m7, col_m8 = st.columns(4)
+        col_m5.metric("Forward Rate", f"{result['forward_rate_pct']:.4f}%")
+        col_m6.metric("Strike", f"{result['strike_pct']:.4f}%")
+        col_m7.metric("Vega (per 1bp σ)", f"${result['vega']:,.0f}")
+        col_m8.metric("Delta (per 1bp S)", f"${result['delta']:,.0f}")
+
+        # PV vs vol chart
+        col_swa, col_swb = st.columns(2)
+        with col_swa:
+            st.subheader("PV vs Implied Vol")
+            vols_range = np.linspace(0.05, 0.60, 80)
+            pvs = [
+                Swaption(float(sw_expiry), float(sw_tenor),
+                         result["strike_pct"] / 100,
+                         sw_notional, sw_type, v).black_pv(curve_sw)
+                for v in vols_range
+            ]
+            fig_vol, ax_vol = plt.subplots(figsize=(5.5, 4))
+            ax_vol.plot(vols_range * 100, pvs, "steelblue", linewidth=2)
+            ax_vol.axvline(sw_vol * 100, color="red", linewidth=1.2, linestyle="--",
+                            label=f"Current vol {sw_vol*100:.1f}%")
+            ax_vol.scatter([sw_vol * 100], [result["black_pv"]], color="red", s=50, zorder=5)
+            ax_vol.set_xlabel("Implied Vol (%)")
+            ax_vol.set_ylabel("Swaption PV ($)")
+            ax_vol.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+            ax_vol.set_title(f"{sw_type.capitalize()} Swaption PV")
+            ax_vol.legend(fontsize=9)
+            ax_vol.spines["top"].set_visible(False)
+            ax_vol.spines["right"].set_visible(False)
+            st.pyplot(fig_vol, use_container_width=True)
+            plt.close()
+
+        with col_swb:
+            st.subheader("PV vs Strike")
+            strikes_range = np.linspace(0.01, 0.10, 80)
+            pvs_k = [
+                Swaption(float(sw_expiry), float(sw_tenor),
+                         k, sw_notional, sw_type, sw_vol).black_pv(curve_sw)
+                for k in strikes_range
+            ]
+            fig_k, ax_k = plt.subplots(figsize=(5.5, 4))
+            ax_k.plot(strikes_range * 100, pvs_k, "darkorange", linewidth=2)
+            ax_k.axvline(result["forward_rate_pct"], color="green", linewidth=1.2,
+                          linestyle="--", label=f"ATM {result['forward_rate_pct']:.2f}%")
+            ax_k.axvline(result["strike_pct"], color="red", linewidth=1.2,
+                          linestyle=":", label=f"Strike {result['strike_pct']:.2f}%")
+            ax_k.set_xlabel("Strike (%)")
+            ax_k.set_ylabel("Swaption PV ($)")
+            ax_k.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+            ax_k.set_title("PV Profile vs Strike")
+            ax_k.legend(fontsize=9)
+            ax_k.spines["top"].set_visible(False)
+            ax_k.spines["right"].set_visible(False)
+            st.pyplot(fig_k, use_container_width=True)
+            plt.close()
+
+    except Exception as e:
+        st.error(f"Swaption error: {e}")
+
+    # Vol surface
+    st.subheader("ATM Swaption Vol Surface (Black-76, 2024 market)")
+    surf = SwaptionVolSurface.typical_market()
+    surf_df = surf.to_dataframe()
+    st.dataframe(
+        surf_df.style.background_gradient(cmap="RdYlGn_r").format("{:.1f}%"),
+        use_container_width=True,
+    )
+    st.caption("Lognormal (Black-76) implied vols in %. "
+               "At a 4–5% forward rate, multiply by ~450 to get approximate normal vol in bps.")
+
+    fig_surf, ax_surf = plt.subplots(figsize=(8, 4))
+    expiry_labels = list(surf_df.index)
+    tenor_labels  = list(surf_df.columns)
+    im = ax_surf.imshow(surf_df.values, aspect="auto", cmap="RdYlGn_r",
+                         vmin=surf_df.values.min(), vmax=surf_df.values.max())
+    ax_surf.set_xticks(range(len(tenor_labels)))
+    ax_surf.set_xticklabels(tenor_labels)
+    ax_surf.set_yticks(range(len(expiry_labels)))
+    ax_surf.set_yticklabels(expiry_labels)
+    ax_surf.set_xlabel("Swap Tenor")
+    ax_surf.set_ylabel("Option Expiry")
+    ax_surf.set_title("ATM Swaption Vol Surface (%)")
+    for i in range(len(expiry_labels)):
+        for j in range(len(tenor_labels)):
+            ax_surf.text(j, i, f"{surf_df.iloc[i, j]:.1f}", ha="center", va="center",
+                          fontsize=9, color="black")
+    plt.colorbar(im, ax=ax_surf, label="Implied Vol (%)")
+    st.pyplot(fig_surf, use_container_width=True)
+    plt.close()
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 154 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 295 tests ✅ | Sharpe 0.282 OOS"
 )

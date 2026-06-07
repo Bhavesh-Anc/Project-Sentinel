@@ -16,6 +16,7 @@ from .bootstrap import SOFRCurveBootstrapper
 from .instruments import SOFRSwap, ForwardRateAgreement, SOFRFutures
 from .convexity import hull_white_convexity_adjustment
 from .risk import ScenarioEngine, RiskReport
+from .swaption import Swaption, SwaptionVolSurface, price_swaption
 
 __all__ = [
     "DiscountCurve",
@@ -26,4 +27,7 @@ __all__ = [
     "hull_white_convexity_adjustment",
     "ScenarioEngine",
     "RiskReport",
+    "Swaption",
+    "SwaptionVolSurface",
+    "price_swaption",
 ]
