@@ -106,13 +106,35 @@ def make_styles():
 def _escape(text):
     """Escape ReportLab special characters, then convert markdown bold/italic."""
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    # Protect inline code spans with placeholders BEFORE italic/bold processing
+    # so underscores inside `code` are not misread as italic markers.
+    placeholders: dict[str, str] = {}
+    def _save_code(m: re.Match) -> str:
+        key = f'\x00CODE{len(placeholders)}\x00'
+        placeholders[key] = f'<font name="Courier">{m.group(1)}</font>'
+        return key
+    text = re.sub(r'`(.+?)`', _save_code, text)
+
+    # Strip inline LaTeX math $...$ — render content as plain text
+    text = re.sub(r'\$(.+?)\$', lambda m: m.group(1)
+                  .replace(r'\times', '×').replace(r'\mathbf', '')
+                  .replace(r'\hat', '').replace(r'\cdot', '·')
+                  .replace(r'\sigma', 'σ').replace(r'\alpha', 'α')
+                  .replace(r'\beta', 'β').replace(r'\rho', 'ρ')
+                  .replace(r'\mu', 'μ').replace(r'\lambda', 'λ')
+                  .replace(r'\Delta', 'Δ').replace(r'\varepsilon', 'ε')
+                  .replace('{', '').replace('}', ''), text)
+
     # bold **text** → <b>text</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # italic *text* or _text_
+    # italic *text* or _text_ (word-boundary aware to avoid false matches)
     text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
-    # inline code `text`
-    text = re.sub(r'`(.+?)`', r'<font name="Courier">\1</font>', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+
+    # Restore code placeholders
+    for key, val in placeholders.items():
+        text = text.replace(key, val)
     return text
 
 
