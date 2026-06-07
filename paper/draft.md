@@ -2,9 +2,9 @@
 
 **Bhavesh Anchalia**
 Computer Science Engineering, Vellore Institute of Technology
-[Email] | [GitHub: github.com/bhavesh-anc/project-sentinel] | [LinkedIn]
+anchaliabhavesh1@gmail.com | GitHub: github.com/bhavesh-anc/project-sentinel
 
-*Working Paper — Draft v0.1 | June 2026*
+*Working Paper — Draft v0.2 | June 2026*
 *Available at SSRN: [link upon upload]*
 
 ---

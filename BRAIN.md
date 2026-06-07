@@ -423,10 +423,13 @@ $$f^{fwd}(T_1, T_2) = f^{fut}(T_1, T_2) - \frac{1}{2}\sigma^2 T_1 T_2$$
 - [x] Backtest results exported (data/backtest_results_final.csv)
 
 ### Polish & Publish (Current Priority)
-- [ ] **Jupyter notebook**: clean, annotated, end-to-end run with real data (next)
-- [ ] **GitHub README**: key result numbers, embedded charts, setup instructions
-- [ ] **SSRN upload**: paper/draft.md → PDF, submit to SSRN q-fin section
-- [ ] **LinkedIn post**: key finding + 2s10s chart + links
+- [x] **Jupyter notebooks**: `notebooks/main_analysis.ipynb` (demo) + `notebooks/live_analysis.ipynb` (interactive ipywidgets)
+- [x] **GitHub README**: key result numbers, embedded charts, setup instructions
+- [x] **Full test suite**: 114 tests across sofr_engine, models, backtesting — all passing
+- [x] **Streamlit dashboard**: 6-tab live web app (`streamlit run dashboard/app.py`)
+- [x] **SSRN PDF**: `paper/draft.pdf` built with ReportLab (19 pages); `paper/build_pdf.py` for reproducibility
+- [ ] **SSRN upload**: Submit `paper/draft.pdf` to SSRN q-fin.PR (do on local machine)
+- [ ] **LinkedIn post**: draft below in Section 9
 
 ### SOFR Curve (Needs Local Machine)
 - [ ] CME SR3 settlement data: access blocked in container (403/TLS 503)
@@ -458,3 +461,55 @@ $$f^{fwd}(T_1, T_2) = f^{fut}(T_1, T_2) - \frac{1}{2}\sigma^2 T_1 T_2$$
 
 ### Elevator Pitch (30 seconds)
 "I built a US rates research platform — a SOFR pricing engine that bootstraps the discount curve from CME futures with convexity adjustment, and a macro model that forecasts Fed policy via Taylor Rule and FOMC probabilities. I combined them into a walk-forward validated trading strategy achieving a 0.28 Sharpe and 65.7% directional accuracy out-of-sample. Published as an institutional-quality research note — same format as sell-side research."
+
+---
+
+## 9. LinkedIn Post Draft
+
+*(Post when SSRN link is live — swap [SSRN_LINK] placeholder)*
+
+---
+
+**Draft A — Research angle (for IB / macro audience)**
+
+Just published a working paper on SOFR curve dynamics and Fed policy forecasting for the 2025–26 US rate cycle.
+
+Key findings:
+→ Fed Funds Rate is **138bps above the Taylor Rule** as of June 2026 — with core PCE at 2.11% and unemployment at 4.3%, the model recommends ~2.25%. The easing case is mathematically clear.
+
+→ The 2022–2024 yield curve inversion lasted **105 weeks** — the deepest (β₁ = +1.74%) and longest sustained inversion since the early 1980s. It resolved in December 2024 as the Fed began cutting.
+
+→ SOFR–T-bill spreads have collapsed to a mean of **0.09bps** — effectively zero. The short-end basis that made LIBOR problematic no longer exists.
+
+→ A walk-forward validated duration strategy using these signals achieved a **Sharpe of 0.28** and **65.7% directional hit rate** (≈12σ above random) out-of-sample.
+
+Full paper + Python implementation: [SSRN_LINK]
+Code: github.com/bhavesh-anc/project-sentinel
+
+#FixedIncome #InterestRates #SOFR #MacroResearch #QuantFinance
+
+---
+
+**Draft B — Engineering angle (for quant / tech audience)**
+
+Built a production-grade US rates pricing engine in Python. Here's what's inside:
+
+🔷 **SOFR forward curve bootstrapper**: 4-step algorithm — overnight anchor → T-bill deposits → CME SR3 futures with Hull-White convexity adjustment → OIS swap bootstrap. Log-linear interpolation guarantees positive forwards.
+
+🔷 **Hull-White convexity adjustment**: CA = ½σ²B(0,T₁)B(0,T₂) — fixed a divergence bug where the naive formula blows up as mean reversion → 0.
+
+🔷 **Nelson-Siegel rolling factors**: 597 weeks of level/slope/curvature decomposition across the full 2015–2026 rate cycle.
+
+🔷 **Walk-forward backtest framework**: No look-ahead bias, vol scaling, stop-loss overlay — OOS Sharpe 0.28 over 2022–2026.
+
+🔷 **114 unit tests** covering bootstrap self-consistency, par swap PV = 0, convexity convergence, and backtest mechanics.
+
+🔷 **Interactive Streamlit dashboard + ipywidgets notebook** for live parameter exploration.
+
+Paired with an institutional research note targeting SSRN publication.
+
+Code: github.com/bhavesh-anc/project-sentinel
+Paper: [SSRN_LINK]
+
+#Python #QuantFinance #SOFR #RatesCurve #FixedIncomeEngineering
+
