@@ -63,6 +63,9 @@ from sofr_engine.monte_carlo import (
     HullWhiteParams, simulate_hw, price_zcb_mc, price_caplet_mc,
     portfolio_var_hw, parametric_var, convergence_diagnostics,
 )
+from sofr_engine.bermudan import (
+    price_bermudan_swaption, price_european_swaption_hw,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -517,6 +520,19 @@ class MCVaRRequest(BaseModel):
     n_paths:        int   = Field(10_000, ge=100, le=200_000)
 
 
+class BermudanRequest(BaseModel):
+    sofr_on:          float = Field(0.0433, ge=0.0, le=0.20)
+    hw_a:             float = Field(0.05, ge=0.0, le=2.0)
+    hw_sigma:         float = Field(0.010, gt=0.0, le=0.20)
+    first_exercise:   float = Field(1.0, ge=0.25, le=20.0, description="First exercise date (years)")
+    swap_maturity:    float = Field(6.0, ge=1.0, le=30.0,  description="Swap maturity (years)")
+    strike:           float | None = Field(None, description="Fixed rate; None = ATM")
+    notional:         float = Field(1_000_000.0)
+    pay_receive:      Literal["payer", "receiver"] = "payer"
+    exercise_freq:    int   = Field(2, ge=1, le=4)
+    n_paths:          int   = Field(5_000, ge=500, le=50_000)
+
+
 class MCCapletRequest(BaseModel):
     sofr_on:      float = Field(0.0433, ge=0.0, le=0.20)
     hw_a:         float = Field(0.05,  ge=0.0, le=2.0)
@@ -662,6 +678,54 @@ def sabr_surface_endpoint():
         "description": "SABR params calibrated to ATM surface (USD convention: beta=0.5, rho=-0.25, nu=0.40)",
         "nodes": rows,
     }
+
+
+# ── Bermudan swaption (LSM) ────────────────────────────────────────────────────
+
+@app.post("/bermudan/price", tags=["Bermudan Swaption"])
+def bermudan_price_endpoint(req: BermudanRequest):
+    """
+    Price a Bermudan swaption via Longstaff-Schwartz (2001) Monte Carlo.
+
+    The holder may exercise at any semi-annual (or quarterly) date between
+    first_exercise and swap_maturity. Returns Bermudan price, European lower
+    bound, early exercise premium, and per-date exercise probabilities.
+    """
+    if req.first_exercise >= req.swap_maturity:
+        raise HTTPException(status_code=422,
+                            detail="first_exercise must be < swap_maturity")
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        params = HullWhiteParams(a=req.hw_a, sigma=req.hw_sigma)
+        result = price_bermudan_swaption(
+            curve, params,
+            first_exercise  = req.first_exercise,
+            swap_maturity   = req.swap_maturity,
+            strike          = req.strike,
+            notional        = req.notional,
+            pay_receive     = req.pay_receive,
+            exercise_freq   = req.exercise_freq,
+            n_paths         = req.n_paths,
+            seed            = 42,
+        )
+        return {
+            "price":                 round(result.price, 2),
+            "european_lower_bound":  round(result.european_lower, 2),
+            "early_exercise_premium": round(result.early_exercise_premium, 2),
+            "strike_pct":            round(result.strike * 100, 4),
+            "swap_maturity":         result.swap_maturity,
+            "n_exercise_dates":      len(result.exercise_dates),
+            "exercise_schedule": [
+                {"date_years": round(d, 4), "exercise_prob": round(p, 4)}
+                for d, p in zip(result.exercise_dates, result.exercise_probs)
+            ],
+            "n_paths": result.n_paths,
+            "pay_receive": result.pay_receive,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # ── Monte Carlo / VaR ─────────────────────────────────────────────────────────

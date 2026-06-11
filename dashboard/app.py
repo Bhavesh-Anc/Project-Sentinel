@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 566 passing ✅")
+    st.markdown("**Tests:** 617 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -66,6 +66,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🏦 Return Attribution",
     "🔔 Caps & Floors",
     "🎲 Hull-White MC & VaR",
+    "🏛️ Bermudan Swaption",
 ])
 
 
@@ -1757,9 +1758,136 @@ with tab16:
         st.error(f"MC/VaR error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 17: Bermudan Swaption (LSM)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab17:
+    st.header("Bermudan Swaption — Longstaff-Schwartz MC (LSM)")
+    st.markdown(
+        "A **Bermudan swaption** allows exercise at any of a discrete set of dates "
+        "(typically every 6 months). It is more valuable than a European swaption "
+        "because of the early-exercise optionality.\n\n"
+        "**Algorithm (Longstaff-Schwartz 2001):**\n"
+        "1. Simulate N Hull-White short-rate paths forward\n"
+        "2. Backward induction: at each exercise date, regress continuation value "
+        "on Laguerre polynomial basis functions of the short rate\n"
+        "3. Exercise if immediate value > fitted continuation value\n"
+        "4. Price = discounted average optimal exercise payoff\n\n"
+        "The **early exercise premium** is the additional value over the best European swaption."
+    )
+    from sofr_engine.bermudan import (
+        price_bermudan_swaption as _berm_price,
+        price_european_swaption_hw as _euro_hw,
+    )
+    from sofr_engine.monte_carlo import HullWhiteParams as _HWPB
+    from sofr_engine.bootstrap import flat_sofr_curve as _berm_flat
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+    with col_b1:
+        b_sofr    = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="b_sofr") / 100
+        b_first   = st.number_input("First exercise (y)", 0.5, 5.0, 1.0, 0.5, key="b_first")
+        b_mat     = st.number_input("Swap maturity (y)",  2.0, 20.0, 6.0, 0.5, key="b_mat")
+    with col_b2:
+        b_freq    = st.radio("Exercise freq", [1, 2, 4], index=1, key="b_freq",
+                              format_func=lambda x: {1: "Annual", 2: "Semi-annual", 4: "Quarterly"}[x])
+        b_type    = st.radio("Type", ["payer", "receiver"], index=0, key="b_type")
+        b_atm     = st.checkbox("ATM strike", value=True, key="b_atm_chk")
+        b_strike_pct = st.number_input("Strike (%)", 1.0, 10.0, 4.33, 0.05, key="b_k",
+                                        disabled=b_atm)
+    with col_b3:
+        b_hw_a    = st.slider("HW mean reversion a", 0.0, 0.30, 0.05, 0.01, key="b_a")
+        b_hw_sig  = st.slider("HW σ (% /√yr)", 0.20, 3.00, 1.00, 0.05, key="b_sig") / 100
+        b_npaths  = st.select_slider("n_paths", [1000, 2000, 5000, 10000], value=3000, key="b_n")
+
+    if b_first >= b_mat:
+        st.warning("First exercise must be before swap maturity.")
+    else:
+        try:
+            from datetime import date as _bdate
+            _b_curve  = _berm_flat(_bdate.today(), b_sofr)
+            _b_params = _HWPB(a=b_hw_a, sigma=b_hw_sig)
+            _b_strike = None if b_atm else (b_strike_pct / 100)
+
+            with st.spinner("Running LSM backward induction…"):
+                berm = _berm_price(
+                    _b_curve, _b_params,
+                    first_exercise = float(b_first),
+                    swap_maturity  = float(b_mat),
+                    strike         = _b_strike,
+                    pay_receive    = b_type,
+                    exercise_freq  = int(b_freq),
+                    n_paths        = b_npaths,
+                    seed           = 42,
+                )
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Bermudan PV", f"${berm.price:,.0f}")
+            col_m2.metric("European Lower Bound", f"${berm.european_lower:,.0f}")
+            col_m3.metric("Early Exercise Premium",
+                          f"${berm.early_exercise_premium:,.0f}",
+                          delta=f"{berm.early_exercise_premium/max(berm.european_lower,1)*100:.1f}%"
+                                if berm.european_lower > 0 else None)
+            col_m4.metric("Strike", f"{berm.strike * 100:.3f}%")
+
+            col_ba, col_bb = st.columns(2)
+            with col_ba:
+                st.subheader("Exercise Probability by Date")
+                import matplotlib.pyplot as _bplt
+                import pandas as _bpd
+
+                fig_b, ax_b = _bplt.subplots(figsize=(6, 4))
+                ax_b.bar(
+                    [f"{d:.1f}Y" for d in berm.exercise_dates],
+                    [p * 100 for p in berm.exercise_probs],
+                    color="steelblue", alpha=0.85, edgecolor="white",
+                )
+                ax_b.set_xlabel("Exercise Date")
+                ax_b.set_ylabel("% of Paths In-the-Money")
+                ax_b.set_title(f"{b_type.capitalize()} Bermudan — ITM Rate by Date")
+                ax_b.spines["top"].set_visible(False)
+                ax_b.spines["right"].set_visible(False)
+                st.pyplot(fig_b, use_container_width=True)
+                _bplt.close()
+
+            with col_bb:
+                st.subheader("European vs Bermudan Breakdown")
+                labels = ["European\n(Best Date)", "Early Exercise\nPremium", "Bermudan\nTotal"]
+                values = [berm.european_lower,
+                          max(berm.early_exercise_premium, 0),
+                          berm.price]
+                bar_colors = ["steelblue", "darkorange", "green"]
+                fig_b2, ax_b2 = _bplt.subplots(figsize=(6, 4))
+                ax_b2.bar(labels, values, color=bar_colors, alpha=0.85, edgecolor="white")
+                for rect, val in zip(ax_b2.patches, values):
+                    ax_b2.text(rect.get_x() + rect.get_width() / 2, rect.get_height() + 100,
+                                f"${val:,.0f}", ha="center", fontsize=9)
+                ax_b2.set_ylabel("PV ($)")
+                ax_b2.set_title("Bermudan = European + Early Exercise Premium")
+                ax_b2.spines["top"].set_visible(False)
+                ax_b2.spines["right"].set_visible(False)
+                st.pyplot(fig_b2, use_container_width=True)
+                _bplt.close()
+
+            # Exercise schedule table
+            st.subheader("Exercise Schedule")
+            sched_df = _bpd.DataFrame({
+                "Exercise Date (y)": [round(d, 3) for d in berm.exercise_dates],
+                "ITM Probability":   [f"{p*100:.1f}%" for p in berm.exercise_probs],
+            })
+            st.dataframe(sched_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Bermudan: {len(berm.exercise_dates)} exercise dates × "
+                f"{b_freq}× per year | HW: a={b_hw_a:.2f}, σ={b_hw_sig*100:.2f}% | "
+                f"{berm.n_paths:,} paths"
+            )
+
+        except Exception as e:
+            st.error(f"Bermudan error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 566 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 617 tests ✅ | Sharpe 0.282 OOS"
 )

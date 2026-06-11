@@ -719,3 +719,85 @@ class TestMCVaREndpoints:
         assert "convergence" in body
         assert "analytical" in body
         assert len(body["convergence"]) > 0
+
+
+# ── Bermudan Swaption endpoints ───────────────────────────────────────────────
+
+_BERM_BASE = {
+    "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+    "first_exercise": 1.0, "swap_maturity": 5.0,
+    "n_paths": 2000,
+}
+
+
+class TestBermudanEndpoints:
+
+    def test_price_200(self):
+        r = client.post("/bermudan/price", json=_BERM_BASE)
+        assert r.status_code == 200
+
+    def test_price_positive(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert body["price"] > 0
+
+    def test_price_keys(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        for key in ["price", "european_lower_bound", "early_exercise_premium",
+                    "strike_pct", "swap_maturity", "n_exercise_dates",
+                    "exercise_schedule", "n_paths", "pay_receive"]:
+            assert key in body
+
+    def test_exercise_schedule_nonempty(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert len(body["exercise_schedule"]) > 0
+
+    def test_exercise_schedule_entry_keys(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        entry = body["exercise_schedule"][0]
+        assert "date_years" in entry
+        assert "exercise_prob" in entry
+
+    def test_exercise_probs_between_0_and_1(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        for entry in body["exercise_schedule"]:
+            assert 0.0 <= entry["exercise_prob"] <= 1.0
+
+    def test_bermudan_geq_european(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert body["price"] >= body["european_lower_bound"] * 0.90
+
+    def test_early_exercise_premium_nonneg(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert body["early_exercise_premium"] >= -body["price"] * 0.10
+
+    def test_strike_pct_reasonable(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert 0.5 < body["strike_pct"] < 15.0
+
+    def test_n_exercise_dates_matches_schedule(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert body["n_exercise_dates"] == len(body["exercise_schedule"])
+
+    def test_receiver_200(self):
+        req = {**_BERM_BASE, "pay_receive": "receiver"}
+        r = client.post("/bermudan/price", json=req)
+        assert r.status_code == 200
+
+    def test_receiver_price_positive(self):
+        req = {**_BERM_BASE, "pay_receive": "receiver"}
+        body = client.post("/bermudan/price", json=req).json()
+        assert body["price"] > 0
+
+    def test_invalid_exercise_vs_maturity_422(self):
+        req = {**_BERM_BASE, "first_exercise": 5.0, "swap_maturity": 5.0}
+        r = client.post("/bermudan/price", json=req)
+        assert r.status_code == 422
+
+    def test_quarterly_exercise_freq(self):
+        req = {**_BERM_BASE, "exercise_freq": 4}
+        body = client.post("/bermudan/price", json=req).json()
+        assert body["n_exercise_dates"] > 0
+
+    def test_pay_receive_field_in_response(self):
+        body = client.post("/bermudan/price", json=_BERM_BASE).json()
+        assert body["pay_receive"] == "payer"

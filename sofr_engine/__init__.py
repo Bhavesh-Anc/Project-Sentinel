@@ -12,6 +12,7 @@ convexity      : Hull-White convexity adjustment for futures vs. OIS
 instruments    : SOFR swap, FRA, and futures pricers
 cap_floor      : Cap/Floor strip pricing — Black-76, Bachelier, vol bootstrap
 monte_carlo    : Hull-White 1F exact MC — ZCB/caplet pricing, portfolio VaR
+bermudan       : Bermudan swaption — Longstaff-Schwartz LSM + European HW MC
 sabr           : SABR stochastic-vol model — smile, skew, calibration
 """
 from .curve import DiscountCurve
@@ -27,6 +28,10 @@ from .monte_carlo import (
     price_zcb_mc, price_caplet_mc,
     portfolio_var_hw, parametric_var,
     convergence_diagnostics,
+)
+from .bermudan import (
+    BermudanSwaptionResult, price_bermudan_swaption,
+    price_european_swaption_hw,
 )
 from .cap_floor import (
     Caplet, Cap, Floor,
@@ -52,6 +57,9 @@ __all__ = [
     "sabr_implied_vol",
     "sabr_vol_smile",
     "calibrate_sabr",
+    "BermudanSwaptionResult",
+    "price_bermudan_swaption",
+    "price_european_swaption_hw",
     "HullWhiteParams",
     "SimulationResult",
     "simulate_hw",
