@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 445 passing ✅")
+    st.markdown("**Tests:** 495 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -64,6 +64,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🎰 Swaptions",
     "📐 SABR Smile",
     "🏦 Return Attribution",
+    "🔔 Caps & Floors",
 ])
 
 
@@ -1416,9 +1417,184 @@ with tab14:
         st.error(f"Attribution error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 15: Caps & Floors
+# ─────────────────────────────────────────────────────────────────────────────
+with tab15:
+    st.header("SOFR Cap / Floor Pricing (Black-76)")
+    st.markdown(
+        "A **cap** is a strip of caplets — call options on quarterly SOFR compounding rates.\n\n"
+        "- **Caplet**: pays max(SOFR_i − K, 0) × τ_i at the end of each reset period\n"
+        "- **Floor**: symmetric put (receives when SOFR falls below K)\n"
+        "- **Put-call parity**: Cap − Floor = PV(Float leg) − PV(Fixed leg at K)\n\n"
+        "Model: **Black-76** (log-normal forward rates) — industry standard for USD rate options."
+    )
+    from sofr_engine.cap_floor import Cap as _Cap, Floor as _Floor
+    from sofr_engine.cap_floor import (
+        cap_floor_parity_pv as _cf_parity, CapFloorVolSurface as _CFVolSurf,
+        strip_caplet_vols as _strip_vols,
+    )
+    from sofr_engine.bootstrap import flat_sofr_curve as _cf_flat
+
+    col_cf1, col_cf2, col_cf3 = st.columns(3)
+    with col_cf1:
+        cf_sofr    = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="cf_sofr") / 100
+        cf_mat     = st.selectbox("Maturity (years)", [1, 2, 3, 5, 7, 10], index=3, key="cf_mat")
+    with col_cf2:
+        cf_atm_chk = st.checkbox("Use ATM strike", value=True, key="cf_atm")
+        cf_strike_pct = st.number_input("Strike (%)", 1.0, 10.0, 4.33, 0.05, key="cf_k",
+                                         disabled=cf_atm_chk)
+        cf_vol     = st.slider("Black-76 flat vol (%)", 5, 80, 30, 1, key="cf_vol") / 100
+    with col_cf3:
+        cf_notional = st.number_input("Notional ($M)", 1.0, 500.0, 10.0, 1.0, key="cf_not") * 1_000_000
+        cf_freq     = st.radio("Reset freq", [2, 4, 12], index=1, key="cf_freq",
+                                format_func=lambda x: {2: "Semi-annual", 4: "Quarterly", 12: "Monthly"}[x])
+
+    try:
+        from datetime import date as _cfdate
+        _cf_curve = _cf_flat(_cfdate.today(), cf_sofr)
+
+        if cf_atm_chk:
+            _tmp_cap = _Cap(float(cf_mat), 0.04, cf_notional, int(cf_freq))
+            cf_strike = _tmp_cap.atm_forward(_cf_curve)
+        else:
+            cf_strike = cf_strike_pct / 100
+
+        cap_obj = _Cap(float(cf_mat), cf_strike, cf_notional, int(cf_freq))
+        flo_obj = _Floor(float(cf_mat), cf_strike, cf_notional, int(cf_freq))
+
+        cap_pv  = cap_obj.pv(_cf_curve, cf_vol)
+        flo_pv  = flo_obj.pv(_cf_curve, cf_vol)
+        parity  = _cf_parity(_cf_curve, float(cf_mat), cf_strike, cf_notional, int(cf_freq))
+        F_atm   = cap_obj.atm_forward(_cf_curve)
+
+        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+        col_c1.metric("Cap PV", f"${cap_pv:,.0f}")
+        col_c2.metric("Floor PV", f"${flo_pv:,.0f}")
+        col_c3.metric("Cap − Floor", f"${cap_pv - flo_pv:,.0f}",
+                      delta=f"Parity: ${parity:,.0f}",
+                      delta_color="off")
+        col_c4.metric("ATM Forward", f"{F_atm * 100:.3f}%",
+                      delta=f"Strike: {cf_strike * 100:.3f}%",
+                      delta_color="off")
+
+        col_cfa, col_cfb = st.columns(2)
+        with col_cfa:
+            st.subheader("PV vs Strike")
+            import matplotlib.pyplot as _cfplt
+            _strikes_r = np.linspace(max(0.005, F_atm - 0.025), F_atm + 0.025, 60)
+            _cap_pvs   = [_Cap(float(cf_mat), k, cf_notional, int(cf_freq)).pv(_cf_curve, cf_vol)
+                          for k in _strikes_r]
+            _flo_pvs   = [_Floor(float(cf_mat), k, cf_notional, int(cf_freq)).pv(_cf_curve, cf_vol)
+                          for k in _strikes_r]
+
+            fig_cf, ax_cf = _cfplt.subplots(figsize=(6, 4))
+            ax_cf.plot(_strikes_r * 100, _cap_pvs, "steelblue", linewidth=2, label="Cap PV")
+            ax_cf.plot(_strikes_r * 100, _flo_pvs, "darkorange", linewidth=2, label="Floor PV")
+            ax_cf.axvline(F_atm * 100, color="green", linestyle="--", linewidth=1.2,
+                           label=f"ATM {F_atm*100:.2f}%")
+            ax_cf.axvline(cf_strike * 100, color="red", linestyle=":", linewidth=1.2,
+                           label=f"Strike {cf_strike*100:.2f}%")
+            ax_cf.yaxis.set_major_formatter(
+                __import__("matplotlib.ticker", fromlist=["FuncFormatter"]).FuncFormatter(
+                    lambda x, _: f"${x/1e3:.0f}k"
+                )
+            )
+            ax_cf.set_xlabel("Strike (%)")
+            ax_cf.set_ylabel("PV ($)")
+            ax_cf.set_title(f"{cf_mat}Y Cap/Floor (vol {cf_vol*100:.0f}%)")
+            ax_cf.legend(fontsize=9)
+            ax_cf.spines["top"].set_visible(False)
+            ax_cf.spines["right"].set_visible(False)
+            st.pyplot(fig_cf, use_container_width=True)
+            _cfplt.close()
+
+        with col_cfb:
+            st.subheader("PV vs Vol")
+            _vols_r = np.linspace(0.05, 0.80, 60)
+            _cap_pv_v = [_Cap(float(cf_mat), cf_strike, cf_notional, int(cf_freq)).pv(_cf_curve, v)
+                         for v in _vols_r]
+            _flo_pv_v = [_Floor(float(cf_mat), cf_strike, cf_notional, int(cf_freq)).pv(_cf_curve, v)
+                         for v in _vols_r]
+
+            fig_cfv, ax_cfv = _cfplt.subplots(figsize=(6, 4))
+            ax_cfv.plot(_vols_r * 100, _cap_pv_v, "steelblue", linewidth=2, label="Cap PV")
+            ax_cfv.plot(_vols_r * 100, _flo_pv_v, "darkorange", linewidth=2, label="Floor PV")
+            ax_cfv.axvline(cf_vol * 100, color="red", linestyle="--", linewidth=1.2,
+                            label=f"Current vol {cf_vol*100:.0f}%")
+            ax_cfv.yaxis.set_major_formatter(
+                __import__("matplotlib.ticker", fromlist=["FuncFormatter"]).FuncFormatter(
+                    lambda x, _: f"${x/1e3:.0f}k"
+                )
+            )
+            ax_cfv.set_xlabel("Implied Vol (%)")
+            ax_cfv.set_ylabel("PV ($)")
+            ax_cfv.set_title("Cap/Floor PV sensitivity to vol")
+            ax_cfv.legend(fontsize=9)
+            ax_cfv.spines["top"].set_visible(False)
+            ax_cfv.spines["right"].set_visible(False)
+            st.pyplot(fig_cfv, use_container_width=True)
+            _cfplt.close()
+
+        # Greeks table
+        dv01_cap  = cap_obj.dv01(_cf_curve, cf_vol)
+        dv01_flo  = flo_obj.dv01(_cf_curve, cf_vol)
+        vega_cap  = cap_obj.vega(_cf_curve, cf_vol)
+        vega_flo  = flo_obj.vega(_cf_curve, cf_vol)
+        theta_cap = cap_obj.theta(_cf_curve, cf_vol)
+
+        st.subheader("Greeks Summary")
+        import pandas as _cfpd
+        greeks_df = _cfpd.DataFrame({
+            "Instrument": ["Cap", "Floor"],
+            "PV ($)":     [f"${cap_pv:,.0f}", f"${flo_pv:,.0f}"],
+            "DV01 ($)":   [f"${dv01_cap:,.0f}", f"${dv01_flo:,.0f}"],
+            "Vega ($/bp vol)": [f"${vega_cap:,.0f}", f"${vega_flo:,.0f}"],
+            "Theta ($/day)":   [f"${theta_cap:,.0f}", "—"],
+            "# Caplets":  [cap_obj.n_caplets(), flo_obj.n_floorlets()],
+        })
+        st.dataframe(greeks_df, use_container_width=True, hide_index=True)
+
+        # Vol surface
+        st.subheader("USD Cap Vol Surface (Black-76 term vols, 2024 market)")
+        cf_surf = _CFVolSurf.typical_market(cf_sofr)
+        import pandas as _cfpd2
+        surf_rows = {}
+        for K in cf_surf._strikes:
+            surf_rows[f"{K*100:.1f}%"] = {
+                f"{T}Y": round(cf_surf.vol(T, K) * 100, 1)
+                for T in cf_surf._tenors
+            }
+        surf_df = _cfpd2.DataFrame(surf_rows).T
+        surf_df.index.name   = "strike"
+        surf_df.columns.name = "tenor"
+        st.dataframe(
+            surf_df.style.background_gradient(cmap="RdYlGn_r").format("{:.1f}%"),
+            use_container_width=True,
+        )
+
+        # Caplet vol strip
+        st.subheader("Caplet Vol Bootstrap (term → forward vols)")
+        _term_vols = {T: cf_surf.vol(T, cf_strike) for T in cf_surf._tenors}
+        _stripped  = _strip_vols(_term_vols, _cf_curve, strike=cf_strike)
+        if _stripped:
+            strip_df = _cfpd2.DataFrame(
+                {"Expiry (y)": [round(e, 3) for e, _ in _stripped],
+                 "Term vol (%)": [round(_term_vols.get(round(e + 0.25, 2), cf_vol) * 100, 2)
+                                  for e, _ in _stripped],
+                 "Fwd caplet vol (%)": [round(v * 100, 2) for _, v in _stripped]}
+            )
+            st.dataframe(strip_df, use_container_width=True, hide_index=True)
+            st.caption("Forward caplet vol stripped from sequential cap differences. "
+                       "Reflects the marginal option cost for each quarterly SOFR reset.")
+
+    except Exception as e:
+        st.error(f"Cap/Floor error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 445 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 495 tests ✅ | Sharpe 0.282 OOS"
 )

@@ -56,6 +56,9 @@ from models.return_attribution import (
     attribute_single_period as _attr_single,
     steepener_attribution as _attr_steepener,
 )
+from sofr_engine.cap_floor import (
+    Cap, Floor, CapFloorVolSurface, strip_caplet_vols, price_cap_floor,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -500,6 +503,16 @@ def vol_surface():
 
 # ── SABR smile ─────────────────────────────────────────────────────────────────
 
+class CapFloorRequest(BaseModel):
+    sofr_on:         float = Field(0.0433, ge=0.0, le=0.20, description="Flat curve overnight SOFR (decimal)")
+    maturity_years:  float = Field(5.0, ge=0.25, le=30.0, description="Cap/floor maturity in years")
+    strike:          float | None = Field(None, description="Strike (decimal); None = ATM")
+    notional:        float = Field(10_000_000.0, description="Notional in USD")
+    vol:             float = Field(0.30, ge=0.001, le=5.0, description="Black-76 flat vol (decimal)")
+    instrument:      Literal["cap", "floor"] = "cap"
+    freq:            int   = Field(4, ge=1, le=12, description="Reset frequency per year (4=quarterly)")
+
+
 class AttributionSingleRequest(BaseModel):
     sofr_start:      float = Field(0.0433, ge=0.0, le=0.20, description="Curve level at period start (decimal)")
     sofr_end:        float = Field(0.0408, ge=0.0, le=0.20, description="Curve level at period end (decimal)")
@@ -624,6 +637,90 @@ def sabr_surface_endpoint():
         "description": "SABR params calibrated to ATM surface (USD convention: beta=0.5, rho=-0.25, nu=0.40)",
         "nodes": rows,
     }
+
+
+# ── Cap / Floor pricing ────────────────────────────────────────────────────────
+
+@app.post("/cap/price", tags=["Cap / Floor"])
+def cap_floor_price_endpoint(req: CapFloorRequest):
+    """
+    Price a SOFR cap or floor strip (Black-76) and return full analytics.
+
+    If strike is None, uses the ATM forward rate (annuity-weighted average
+    of quarterly SOFR forward rates over the cap tenor).
+    Returns PV, DV01, vega, ATM forward, moneyness, and per-caplet count.
+    """
+    try:
+        curve = _flat_curve(req.sofr_on)
+        result = price_cap_floor(
+            curve,
+            maturity_years=req.maturity_years,
+            strike=req.strike,
+            notional=req.notional,
+            vol=req.vol,
+            instrument=req.instrument,
+            freq=req.freq,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/cap/vol-surface", tags=["Cap / Floor"])
+def cap_vol_surface_endpoint(sofr_on: float = 0.0433):
+    """
+    Return a typical 2024-vintage USD SOFR cap vol surface (Black-76 flat vols).
+
+    Grid: tenors [1Y, 2Y, 3Y, 5Y, 7Y, 10Y] × strikes [ATM-150bps … ATM+150bps].
+    """
+    try:
+        surf = CapFloorVolSurface.typical_market(sofr_on=sofr_on)
+        rows = []
+        for i, T in enumerate(surf._tenors):
+            for j, K in enumerate(surf._strikes):
+                rows.append({
+                    "tenor_years": T,
+                    "strike_pct":  round(K * 100, 4),
+                    "vol_pct":     round(surf._vols[i, j] * 100, 4),
+                })
+        return {
+            "description": "Black-76 flat cap vols (%). 2024 USD market approximation.",
+            "sofr_on_pct": round(sofr_on * 100, 4),
+            "nodes":       rows,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/cap/strip-vols", tags=["Cap / Floor"])
+def strip_caplet_vols_endpoint(
+    sofr_on:  float = 0.0433,
+    strike:   float = 0.04,
+    tenors:   str   = "1,2,3,5,7,10",
+):
+    """
+    Bootstrap per-caplet (forward) vols from market cap term vols.
+
+    Uses typical 2024 USD market vol levels anchored to the provided SOFR curve.
+    Returns expiry_years and forward caplet Black-76 vol for each stripped period.
+    """
+    try:
+        curve = _flat_curve(sofr_on)
+        surf  = CapFloorVolSurface.typical_market(sofr_on=sofr_on)
+        t_list = [float(t) for t in tenors.split(",")]
+        term_vols = {T: surf.vol(T, strike) for T in t_list}
+        caplet_vols = strip_caplet_vols(term_vols, curve, strike=strike)
+        return {
+            "sofr_on_pct":    round(sofr_on * 100, 4),
+            "strike_pct":     round(strike * 100, 4),
+            "term_vols":      {f"{T}Y": round(v * 100, 4) for T, v in term_vols.items()},
+            "caplet_vols":    [
+                {"expiry_years": round(e, 4), "vol_pct": round(v * 100, 4)}
+                for e, v in caplet_vols
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # ── Return attribution ─────────────────────────────────────────────────────────

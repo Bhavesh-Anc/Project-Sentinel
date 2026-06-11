@@ -557,3 +557,92 @@ class TestSABRSurface:
         # USD convention: rho = -0.25 (payer skew)
         for node in client.get("/sabr/surface").json()["nodes"]:
             assert node["rho"] < 0
+
+
+# ── Cap / Floor endpoints ─────────────────────────────────────────────────────
+
+class TestCapFloorEndpoints:
+
+    def test_cap_price_200(self):
+        r = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "notional": 10_000_000, "vol": 0.30,
+            "instrument": "cap",
+        })
+        assert r.status_code == 200
+
+    def test_cap_price_pv_positive(self):
+        body = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "notional": 10_000_000, "vol": 0.30,
+        }).json()
+        assert body["pv"] > 0
+
+    def test_floor_price_200(self):
+        r = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "notional": 10_000_000, "vol": 0.30,
+            "instrument": "floor",
+        })
+        assert r.status_code == 200
+        assert r.json()["pv"] > 0
+
+    def test_cap_price_atm_strike(self):
+        body = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "notional": 10_000_000, "vol": 0.30,
+        }).json()
+        assert "atm_forward_pct" in body
+        assert abs(body["moneyness_bps"]) < 0.01  # ATM → moneyness ≈ 0
+
+    def test_cap_response_keys(self):
+        body = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "vol": 0.30,
+        }).json()
+        for key in ["pv", "dv01", "vega_per_bp", "atm_forward_pct", "n_caplets", "strike_pct"]:
+            assert key in body
+
+    def test_cap_dv01_positive(self):
+        body = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "vol": 0.30,
+        }).json()
+        assert body["dv01"] > 0
+
+    def test_longer_maturity_higher_cap_pv(self):
+        pv_2y = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 2.0,
+            "strike": 0.04, "vol": 0.30, "notional": 10_000_000,
+        }).json()["pv"]
+        pv_5y = client.post("/cap/price", json={
+            "sofr_on": 0.0433, "maturity_years": 5.0,
+            "strike": 0.04, "vol": 0.30, "notional": 10_000_000,
+        }).json()["pv"]
+        assert pv_5y > pv_2y
+
+    def test_vol_surface_200(self):
+        r = client.get("/cap/vol-surface")
+        assert r.status_code == 200
+
+    def test_vol_surface_nodes(self):
+        body = client.get("/cap/vol-surface").json()
+        assert len(body["nodes"]) > 0
+        for node in body["nodes"][:5]:
+            assert "tenor_years" in node
+            assert "strike_pct" in node
+            assert "vol_pct" in node
+
+    def test_strip_vols_200(self):
+        r = client.get("/cap/strip-vols")
+        assert r.status_code == 200
+
+    def test_strip_vols_returns_caplet_vols(self):
+        body = client.get("/cap/strip-vols").json()
+        assert "caplet_vols" in body
+        assert len(body["caplet_vols"]) > 0
+
+    def test_strip_vols_expiry_order(self):
+        vols = client.get("/cap/strip-vols").json()["caplet_vols"]
+        expiries = [v["expiry_years"] for v in vols]
+        assert expiries == sorted(expiries)
