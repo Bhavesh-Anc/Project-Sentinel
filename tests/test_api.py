@@ -922,3 +922,63 @@ class TestCMSEndpoints:
         adjs = [e["convexity_adj_bps"] for e in body["schedule"]]
         # Convexity adjustment should generally increase with expiry
         assert adjs[-1] > adjs[0]
+
+
+# ── G2++ endpoints ────────────────────────────────────────────────────────────
+
+_G2PP = {"sofr_on": 0.0433, "a": 0.05, "b": 0.10, "sigma": 0.010, "eta": 0.008, "rho": -0.30}
+
+
+class TestG2ppEndpoints:
+
+    def test_swaption_200(self):
+        r = client.post("/g2pp/swaption", json={**_G2PP, "expiry": 1.0, "swap_tenor": 5.0,
+                                                 "n_paths": 2000})
+        assert r.status_code == 200
+
+    def test_swaption_pv_positive(self):
+        body = client.post("/g2pp/swaption", json={**_G2PP, "expiry": 1.0, "swap_tenor": 5.0,
+                                                    "n_paths": 3000}).json()
+        assert body["pv"] > 0
+
+    def test_swaption_keys(self):
+        body = client.post("/g2pp/swaption", json={**_G2PP, "expiry": 1.0, "swap_tenor": 5.0,
+                                                    "n_paths": 1000}).json()
+        for k in ["pv", "mc_stderr", "forward_swap_rate_pct", "strike_pct", "annuity", "n_paths"]:
+            assert k in body
+
+    def test_swaption_atm_strike(self):
+        body = client.post("/g2pp/swaption", json={**_G2PP, "expiry": 1.0, "swap_tenor": 5.0,
+                                                    "strike": None, "n_paths": 1000}).json()
+        assert abs(body["forward_swap_rate_pct"] - body["strike_pct"]) < 0.01
+
+    def test_swaption_receiver_positive(self):
+        body = client.post("/g2pp/swaption", json={**_G2PP, "expiry": 1.0, "swap_tenor": 5.0,
+                                                    "pay_receive": "receiver",
+                                                    "n_paths": 2000}).json()
+        assert body["pv"] > 0
+
+    def test_var_200(self):
+        r = client.post("/g2pp/var", json={**_G2PP, "portfolio_dv01": 10000,
+                                            "horizon_days": 1, "confidence": 0.99,
+                                            "n_paths": 2000})
+        assert r.status_code == 200
+
+    def test_var_negative_long_duration(self):
+        body = client.post("/g2pp/var", json={**_G2PP, "portfolio_dv01": 10000,
+                                               "horizon_days": 1, "confidence": 0.99,
+                                               "n_paths": 2000}).json()
+        assert body["var_usd"] < 0
+
+    def test_var_cvar_le_var(self):
+        body = client.post("/g2pp/var", json={**_G2PP, "portfolio_dv01": 10000,
+                                               "horizon_days": 1, "confidence": 0.99,
+                                               "n_paths": 2000}).json()
+        assert body["cvar_usd"] <= body["var_usd"]
+
+    def test_var_keys(self):
+        body = client.post("/g2pp/var", json={**_G2PP, "portfolio_dv01": 10000,
+                                               "horizon_days": 1, "confidence": 0.99,
+                                               "n_paths": 1000}).json()
+        for k in ["var_usd", "cvar_usd", "var_bps", "pnl_mean", "pnl_std", "n_paths"]:
+            assert k in body

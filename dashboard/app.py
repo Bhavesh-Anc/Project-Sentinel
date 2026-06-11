@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 688 passing ✅")
+    st.markdown("**Tests:** 745 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -68,6 +68,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🎲 Hull-White MC & VaR",
     "🏛️ Bermudan Swaption",
     "📐 CMS Pricing",
+    "🔵 G2++ Two-Factor",
 ])
 
 
@@ -2097,9 +2098,176 @@ with tab18:
             st.error(f"CMS spread option error: {e}")
 
 
+# TAB 19: G2++ Two-Factor Model
+# ─────────────────────────────────────────────────────────────────────────────
+with tab19:
+    st.header("G2++ Two-Factor Gaussian Interest Rate Model")
+    st.markdown(
+        "The **G2++** model (Brigo & Mercurio, 2006) adds a second mean-reverting factor "
+        "to Hull-White 1F, achieving a richer term structure fit:\n\n"
+        "$$r(t) = x(t) + y(t) + \\varphi(t)$$\n\n"
+        "$$dx = -a\\,x\\,dt + \\sigma\\,dW_1, \\quad "
+        "dy = -b\\,y\\,dt + \\eta\\,dW_2, \\quad dW_1 dW_2 = \\rho\\,dt$$\n\n"
+        "The correlated two-factor structure generates humped yield curves and better fits "
+        "the swaption vol surface than 1F models."
+    )
+
+    from sofr_engine.g2pp import (
+        G2ppParams as _G2PP_P,
+        simulate_g2pp as _sim_g2,
+        g2pp_swaption_mc as _g2sw,
+        g2pp_portfolio_var as _g2var,
+        g2pp_zcb as _g2zcb,
+    )
+    from sofr_engine.bootstrap import flat_sofr_curve as _g2_flat
+
+    g2_sub = st.radio("Section", ["ZCB & Yield Curve", "Swaption Pricing", "Portfolio VaR"],
+                      horizontal=True, key="g2_sub")
+
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        g2_sofr  = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="g2_sofr") / 100
+        g2_a     = st.slider("a (x-factor speed)", 0.01, 0.50, 0.05, 0.01, key="g2a")
+        g2_b     = st.slider("b (y-factor speed)", 0.01, 0.50, 0.10, 0.01, key="g2b")
+    with col_g2:
+        g2_sigma = st.slider("σ (x-factor vol %)", 0.10, 3.00, 1.00, 0.05, key="g2s") / 100
+        g2_eta   = st.slider("η (y-factor vol %)", 0.10, 3.00, 0.80, 0.05, key="g2e") / 100
+        g2_rho   = st.slider("ρ (W1-W2 correlation)", -0.99, 0.99, -0.30, 0.01, key="g2rho")
+
+    try:
+        _g2_crv = _g2_flat(__import__("datetime").date.today(), g2_sofr)
+        _g2_p   = _G2PP_P(a=g2_a, b=g2_b, sigma=g2_sigma, eta=g2_eta, rho=g2_rho)
+
+        if g2_sub == "ZCB & Yield Curve":
+            import numpy as np
+            import matplotlib.pyplot as _g2plt
+
+            # Simulate 3 paths and show short-rate evolution
+            sim = _sim_g2(_g2_crv, _g2_p, horizon=5.0, n_steps=250, n_paths=6, seed=42)
+
+            fig_g, axes = _g2plt.subplots(1, 2, figsize=(12, 4))
+            ax1, ax2 = axes
+
+            # Short rate paths
+            for i in range(6):
+                ax1.plot(sim.t_grid, sim.r_paths[i] * 100, alpha=0.7, linewidth=1)
+            ax1.set_xlabel("Time (years)")
+            ax1.set_ylabel("Short Rate (%)")
+            ax1.set_title("G2++ Short Rate Paths")
+            ax1.spines["top"].set_visible(False)
+            ax1.spines["right"].set_visible(False)
+
+            # G2++ yield curve vs initial curve
+            mats = np.linspace(0.25, 20.0, 80)
+            yields_g2 = np.array([-np.log(_g2zcb(_g2_crv, _g2_p, 0.0, float(T), 0.0, 0.0)) / T
+                                   for T in mats]) * 100
+            yields_mkt = np.array([-np.log(float(_g2_crv.df(float(T)))) / T for T in mats]) * 100
+            ax2.plot(mats, yields_mkt, "k--", linewidth=2, label="Initial curve")
+            ax2.plot(mats, yields_g2, "royalblue", linewidth=2, label="G2++ repriced")
+            ax2.set_xlabel("Maturity (years)")
+            ax2.set_ylabel("Zero Yield (%)")
+            ax2.set_title("G2++ vs Market Yield Curve")
+            ax2.legend()
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+
+            _g2plt.tight_layout()
+            st.pyplot(fig_g, use_container_width=True)
+            _g2plt.close()
+            st.caption(f"G2++: a={g2_a:.2f}, b={g2_b:.2f}, σ={g2_sigma*100:.2f}%, η={g2_eta*100:.2f}%, ρ={g2_rho:.2f}")
+
+        elif g2_sub == "Swaption Pricing":
+            col_sw1, col_sw2 = st.columns(2)
+            with col_sw1:
+                sw_exp  = st.number_input("Expiry (y)", 0.25, 10.0, 1.0, 0.25, key="sw_exp")
+                sw_ten  = st.number_input("Swap tenor (y)", 1.0, 20.0, 5.0, 1.0, key="sw_ten")
+                sw_type = st.radio("Type", ["payer", "receiver"], horizontal=True, key="sw_type")
+            with col_sw2:
+                sw_np   = st.select_slider("n_paths", [2000, 5000, 10000], value=5000, key="sw_np")
+                sw_atm  = st.checkbox("ATM strike", value=True, key="sw_atm")
+                sw_k    = st.number_input("Strike (%)", 1.0, 10.0, 4.33, 0.05, key="sw_k",
+                                          disabled=sw_atm)
+
+            with st.spinner("Running G2++ MC swaption..."):
+                sw_res = _g2sw(_g2_crv, _g2_p, expiry=float(sw_exp), swap_tenor=float(sw_ten),
+                                strike=None if sw_atm else sw_k/100, notional=1_000_000.0,
+                                pay_receive=sw_type, n_paths=sw_np, seed=42)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Swaption PV", f"${sw_res['pv']:,.0f}")
+            c2.metric("MC Std Error", f"${sw_res['mc_stderr']:,.0f}")
+            c3.metric("Fwd Swap Rate", f"{sw_res['forward_swap_rate_pct']:.3f}%")
+            c4.metric("Annuity", f"{sw_res['annuity']:.4f}")
+
+            # Vol surface: vary expiry and tenor
+            import numpy as np
+            import matplotlib.pyplot as _swplt
+            from scipy.stats import norm as _snorm
+            from scipy.optimize import brentq as _sbr
+
+            expiries_sw = [0.5, 1.0, 2.0, 3.0, 5.0]
+            tenors_sw   = [1.0, 2.0, 5.0, 10.0]
+
+            def _iv(F, K, T, pv, ann):
+                if pv <= 0 or F <= 0 or K <= 0 or ann <= 0:
+                    return 0.0
+                p_per = pv / ann
+                def f(v):
+                    d1 = (np.log(F/K) + 0.5*v**2*T) / (v*np.sqrt(T))
+                    return F*_snorm.cdf(d1) - K*_snorm.cdf(d1 - v*np.sqrt(T)) - p_per
+                try:
+                    return _sbr(f, 1e-4, 5.0)
+                except Exception:
+                    return 0.0
+
+            vol_grid = np.zeros((len(expiries_sw), len(tenors_sw)))
+            for i, Te in enumerate(expiries_sw):
+                for j, Ts in enumerate(tenors_sw):
+                    r = _g2sw(_g2_crv, _g2_p, Te, Ts, None, 1.0, "payer", 2, 2000, 42)
+                    F = r["forward_swap_rate_pct"]/100
+                    vol_grid[i, j] = _iv(F, F, Te, r["pv"], r["annuity"]) * 100
+
+            fig_vs, ax_vs = _swplt.subplots(figsize=(9, 4))
+            for j, Ts in enumerate(tenors_sw):
+                ax_vs.plot(expiries_sw, vol_grid[:, j], marker="o", linewidth=2,
+                           label=f"{Ts:.0f}Y tenor")
+            ax_vs.set_xlabel("Expiry (years)")
+            ax_vs.set_ylabel("Implied Vol (%)")
+            ax_vs.set_title(f"G2++ ATM Swaption Vol Term Structure (a={g2_a:.2f}, b={g2_b:.2f})")
+            ax_vs.legend()
+            ax_vs.spines["top"].set_visible(False)
+            ax_vs.spines["right"].set_visible(False)
+            st.pyplot(fig_vs, use_container_width=True)
+            _swplt.close()
+
+        else:  # VaR
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                v_dv01 = st.number_input("Portfolio DV01 ($)", -100_000, 100_000, 10_000, 1_000, key="v_dv01")
+                v_hor  = st.number_input("Horizon (days)", 1, 20, 1, 1, key="v_hor")
+            with col_v2:
+                v_conf = st.selectbox("Confidence", [0.95, 0.99, 0.999], index=1, key="v_conf")
+                v_np   = st.select_slider("n_paths", [5000, 10000, 20000], value=10000, key="v_np")
+
+            with st.spinner("Running G2++ VaR simulation..."):
+                v_res = _g2var(_g2_crv, _g2_p, portfolio_dv01=float(v_dv01),
+                                horizon=v_hor/250.0, confidence=float(v_conf),
+                                n_paths=v_np, seed=42)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("VaR", f"${v_res['var_usd']:,.0f}")
+            c2.metric("CVaR (ES)", f"${v_res['cvar_usd']:,.0f}")
+            c3.metric("VaR (bps)", f"{v_res['var_bps']:.2f}")
+            c4.metric("PnL Std Dev", f"${v_res['pnl_std']:,.0f}")
+            st.caption(f"G2++ 2-factor VaR | {int(v_conf*100)}% confidence | {v_hor}d horizon | {v_np:,} paths")
+
+    except Exception as e:
+        st.error(f"G2++ error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 688 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 745 tests ✅ | Sharpe 0.282 OOS"
 )

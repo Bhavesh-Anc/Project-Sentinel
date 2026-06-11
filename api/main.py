@@ -66,6 +66,13 @@ from sofr_engine.monte_carlo import (
 from sofr_engine.bermudan import (
     price_bermudan_swaption, price_european_swaption_hw,
 )
+from sofr_engine.g2pp import (
+    G2ppParams,
+    simulate_g2pp as _sim_g2pp,
+    g2pp_swaption_mc as _g2pp_sw_mc,
+    g2pp_portfolio_var as _g2pp_var,
+    g2pp_zcb as _g2pp_zcb,
+)
 from sofr_engine.cms import (
     CMSCaplet as _CMSCaplet,
     CMSSpreadOption as _CMSSpreadOption,
@@ -576,6 +583,35 @@ class AttributionSteepenerRequest(BaseModel):
     dt_years:     float = Field(1/12, gt=0.0, le=5.0)
 
 
+class G2ppSwaptionRequest(BaseModel):
+    sofr_on:     float = Field(0.0433, ge=0.0, le=0.20)
+    a:           float = Field(0.05, ge=1e-4, le=2.0, description="x mean-reversion speed")
+    b:           float = Field(0.10, ge=1e-4, le=2.0, description="y mean-reversion speed")
+    sigma:       float = Field(0.010, gt=0.0, le=0.20, description="x vol")
+    eta:         float = Field(0.008, gt=0.0, le=0.20, description="y vol")
+    rho:         float = Field(-0.30, ge=-0.99, le=0.99, description="W1-W2 correlation")
+    expiry:      float = Field(1.0, ge=0.01, le=20.0)
+    swap_tenor:  float = Field(5.0, ge=0.25, le=30.0)
+    strike:      float | None = Field(None, description="Strike; None = ATM")
+    notional:    float = Field(1_000_000.0)
+    pay_receive: Literal["payer", "receiver"] = "payer"
+    freq:        int   = Field(2, ge=1, le=4)
+    n_paths:     int   = Field(10_000, ge=500, le=100_000)
+
+
+class G2ppVaRRequest(BaseModel):
+    sofr_on:        float = Field(0.0433, ge=0.0, le=0.20)
+    a:              float = Field(0.05, ge=1e-4, le=2.0)
+    b:              float = Field(0.10, ge=1e-4, le=2.0)
+    sigma:          float = Field(0.010, gt=0.0, le=0.20)
+    eta:            float = Field(0.008, gt=0.0, le=0.20)
+    rho:            float = Field(-0.30, ge=-0.99, le=0.99)
+    portfolio_dv01: float = Field(10_000.0, description="Portfolio DV01 ($ per bp)")
+    horizon_days:   int   = Field(1, ge=1, le=250)
+    confidence:     float = Field(0.99, ge=0.90, le=0.9999)
+    n_paths:        int   = Field(10_000, ge=1000, le=100_000)
+
+
 class CMSConvexityRequest(BaseModel):
     sofr_on:     float = Field(0.0433, ge=0.0, le=0.20, description="Flat SOFR curve level (decimal)")
     expiry:      float = Field(1.0,    ge=0.01, le=30.0, description="Option expiry (years)")
@@ -1027,6 +1063,63 @@ def attribution_steepener(req: AttributionSteepenerRequest):
                 "modified_duration": round(long_r.modified_duration, 4),
             },
         }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ── G2++ two-factor model ─────────────────────────────────────────────────────
+
+@app.post("/g2pp/swaption", tags=["G2++"])
+def g2pp_swaption_endpoint(req: G2ppSwaptionRequest):
+    """
+    Price a European swaption under the G2++ two-factor Gaussian model via MC.
+    Supports both payer and receiver, ATM or fixed strike.
+    """
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        params = G2ppParams(a=req.a, b=req.b, sigma=req.sigma, eta=req.eta, rho=req.rho)
+        res    = _g2pp_sw_mc(
+            curve, params,
+            expiry      = req.expiry,
+            swap_tenor  = req.swap_tenor,
+            strike      = req.strike,
+            notional    = req.notional,
+            pay_receive = req.pay_receive,
+            freq        = req.freq,
+            n_paths     = req.n_paths,
+            seed        = 42,
+        )
+        return {
+            "pv":                     round(res["pv"], 2),
+            "mc_stderr":              round(res["mc_stderr"], 2),
+            "forward_swap_rate_pct":  round(res["forward_swap_rate_pct"], 5),
+            "strike_pct":             round(res["strike_pct"], 5),
+            "annuity":                round(res["annuity"], 6),
+            "n_paths":                res["n_paths"],
+            "pay_receive":            res["pay_receive"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/g2pp/var", tags=["G2++"])
+def g2pp_var_endpoint(req: G2ppVaRRequest):
+    """
+    Portfolio VaR/CVaR under G2++ via scenario simulation.
+    Simulates short-rate scenarios at the horizon and computes PnL distribution.
+    """
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        params = G2ppParams(a=req.a, b=req.b, sigma=req.sigma, eta=req.eta, rho=req.rho)
+        res    = _g2pp_var(
+            curve, params,
+            portfolio_dv01 = req.portfolio_dv01,
+            horizon        = req.horizon_days / 250.0,
+            confidence     = req.confidence,
+            n_paths        = req.n_paths,
+            seed           = 42,
+        )
+        return res
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
