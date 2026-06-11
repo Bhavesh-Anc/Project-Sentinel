@@ -10,6 +10,10 @@ from .carry_rolldown import (
     carry_rolldown_table, carry_rolldown_matrix,
     breakeven_yield_move, steepener_carry,
 )
+from .return_attribution import (
+    AttributionResult, attribute_single_period, attribute_history,
+    PortfolioAttribution, steepener_attribution,
+)
 
 __all__ = [
     "compute_taylor_rule", "TaylorRuleConfig", "estimate_taylor_rule",
@@ -24,4 +28,6 @@ __all__ = [
     "carry_bps", "rolldown_bps", "total_return_bps",
     "carry_rolldown_table", "carry_rolldown_matrix",
     "breakeven_yield_move", "steepener_carry",
+    "AttributionResult", "attribute_single_period", "attribute_history",
+    "PortfolioAttribution", "steepener_attribution",
 ]

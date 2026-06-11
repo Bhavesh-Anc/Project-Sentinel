@@ -52,6 +52,10 @@ from sofr_engine.swaption import Swaption, SwaptionVolSurface, price_swaption
 from sofr_engine.sabr import (
     SABRParams, SABRSurface, sabr_implied_vol, sabr_vol_smile, calibrate_sabr,
 )
+from models.return_attribution import (
+    attribute_single_period as _attr_single,
+    steepener_attribution as _attr_steepener,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -496,6 +500,22 @@ def vol_surface():
 
 # ── SABR smile ─────────────────────────────────────────────────────────────────
 
+class AttributionSingleRequest(BaseModel):
+    sofr_start:      float = Field(0.0433, ge=0.0, le=0.20, description="Curve level at period start (decimal)")
+    sofr_end:        float = Field(0.0408, ge=0.0, le=0.20, description="Curve level at period end (decimal)")
+    tenor_years:     float = Field(10.0, ge=0.25, le=50.0, description="Position tenor in years")
+    dt_years:        float = Field(1/12, gt=0.0, le=5.0,   description="Holding period in years (default 1M)")
+    financing_rate:  float | None = Field(None, description="Financing rate (decimal); None = overnight SOFR")
+
+
+class AttributionSteepenerRequest(BaseModel):
+    sofr_start:   float = Field(0.0433, ge=0.0, le=0.20)
+    sofr_end:     float = Field(0.0408, ge=0.0, le=0.20)
+    short_tenor:  float = Field(2.0, ge=0.25, le=10.0, description="Short leg tenor (years)")
+    long_tenor:   float = Field(10.0, ge=1.0, le=50.0,  description="Long leg tenor (years)")
+    dt_years:     float = Field(1/12, gt=0.0, le=5.0)
+
+
 class SABRSmileRequest(BaseModel):
     forward_rate:     float = Field(0.0453, description="Forward swap rate (decimal)")
     expiry_years:     float = Field(1.0, ge=0.01, le=30.0, description="Option expiry in years")
@@ -604,6 +624,99 @@ def sabr_surface_endpoint():
         "description": "SABR params calibrated to ATM surface (USD convention: beta=0.5, rho=-0.25, nu=0.40)",
         "nodes": rows,
     }
+
+
+# ── Return attribution ─────────────────────────────────────────────────────────
+
+@app.post("/attribution/single", tags=["Attribution"])
+def attribution_single(req: AttributionSingleRequest):
+    """
+    Campisi return attribution for a single par-bond position over one holding period.
+
+    Decomposes total P&L into: Carry, Roll-Down, Duration, Convexity, Residual.
+    Both curves are flat SOFR curves built from the supplied overnight rates.
+    """
+    try:
+        curve_s = _flat_curve(req.sofr_start)
+        curve_e = _flat_curve(req.sofr_end)
+        r = _attr_single(
+            curve_start    = curve_s,
+            curve_end      = curve_e,
+            tenor_years    = req.tenor_years,
+            dt_years       = req.dt_years,
+            financing_rate = req.financing_rate,
+        )
+        return {
+            "tenor_years":       r.tenor_years,
+            "dt_years":          round(r.dt_years, 6),
+            "yield_start_pct":   round(r.yield_start_pct, 5),
+            "yield_end_pct":     round(r.yield_end_pct, 5),
+            "delta_y_bps":       round(r.delta_y_bps, 4),
+            "carry_bps":         round(r.carry_bps, 4),
+            "rolldown_bps":      round(r.rolldown_bps, 4),
+            "duration_bps":      round(r.duration_bps, 4),
+            "convexity_bps":     round(r.convexity_bps, 6),
+            "total_approx_bps":  round(r.total_approx_bps, 4),
+            "total_actual_bps":  round(r.total_actual_bps, 4),
+            "residual_bps":      round(r.residual_bps, 4),
+            "modified_duration": round(r.modified_duration, 4),
+            "convexity_years2":  round(r.convexity_years2, 4),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/attribution/steepener", tags=["Attribution"])
+def attribution_steepener(req: AttributionSteepenerRequest):
+    """
+    DV01-neutral 2s10s steepener attribution over one holding period.
+
+    Receive fixed short_tenor / pay fixed long_tenor with DV01-neutral sizing.
+    Returns leg-level and net attribution across all five Campisi components.
+    """
+    try:
+        curve_s = _flat_curve(req.sofr_start)
+        curve_e = _flat_curve(req.sofr_end)
+        res = _attr_steepener(
+            curve_start  = curve_s,
+            curve_end    = curve_e,
+            short_tenor  = req.short_tenor,
+            long_tenor   = req.long_tenor,
+            dt_years     = req.dt_years,
+        )
+        short_r = res["short_leg"]
+        long_r  = res["long_leg"]
+        return {
+            "dv01_ratio":        round(res["dv01_ratio"], 6),
+            "net_carry_bps":     round(res["net_carry_bps"], 4),
+            "net_rolldown_bps":  round(res["net_rolldown_bps"], 4),
+            "net_duration_bps":  round(res["net_duration_bps"], 4),
+            "net_convexity_bps": round(res["net_convexity_bps"], 6),
+            "net_total_bps":     round(res["net_total_bps"], 4),
+            "dominant_component": res["net"]["dominant_component"],
+            "short_leg": {
+                "tenor_years":      short_r.tenor_years,
+                "yield_start_pct":  round(short_r.yield_start_pct, 5),
+                "delta_y_bps":      round(short_r.delta_y_bps, 4),
+                "carry_bps":        round(short_r.carry_bps, 4),
+                "rolldown_bps":     round(short_r.rolldown_bps, 4),
+                "duration_bps":     round(short_r.duration_bps, 4),
+                "total_actual_bps": round(short_r.total_actual_bps, 4),
+                "modified_duration": round(short_r.modified_duration, 4),
+            },
+            "long_leg": {
+                "tenor_years":      long_r.tenor_years,
+                "yield_start_pct":  round(long_r.yield_start_pct, 5),
+                "delta_y_bps":      round(long_r.delta_y_bps, 4),
+                "carry_bps":        round(long_r.carry_bps, 4),
+                "rolldown_bps":     round(long_r.rolldown_bps, 4),
+                "duration_bps":     round(long_r.duration_bps, 4),
+                "total_actual_bps": round(long_r.total_actual_bps, 4),
+                "modified_duration": round(long_r.modified_duration, 4),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 if __name__ == "__main__":

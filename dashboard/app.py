@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 390 passing ✅")
+    st.markdown("**Tests:** 445 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -63,6 +63,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🔄 Carry & Roll-Down",
     "🎰 Swaptions",
     "📐 SABR Smile",
+    "🏦 Return Attribution",
 ])
 
 
@@ -1243,11 +1244,181 @@ with tab13:
     except Exception as e:
         st.error(f"SABR surface error: {e}")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 14: Return Attribution (Campisi Framework)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab14:
+    st.header("Fixed-Income Return Attribution (Campisi Framework)")
+    st.markdown(
+        "Decomposes bond/swap P&L into five orthogonal components:\n\n"
+        "**Total Return = Carry + Roll-Down + Duration + Convexity + Residual**\n\n"
+        "- **Carry**: net coupon income minus overnight financing cost\n"
+        "- **Roll-Down**: price appreciation as the bond ages along an upward-sloping curve\n"
+        "- **Duration**: first-order sensitivity to parallel yield shift (−D × Δy)\n"
+        "- **Convexity**: second-order Taylor correction (½ × C × Δy²)\n"
+        "- **Residual**: unexplained P&L (twist, basis, model error)\n\n"
+        "*Reference: Campisi (2000), GRAP Fixed-Income Attribution Standard.*"
+    )
+
+    from sofr_engine.bootstrap import flat_sofr_curve as _attr_flat_curve
+    from sofr_engine.curve import DiscountCurve as _AttrCurve
+    from models.return_attribution import (
+        attribute_single_period as _attr_single_period,
+        steepener_attribution as _attr_steepener_fn,
+    )
+
+    col_at1, col_at2, col_at3 = st.columns(3)
+    with col_at1:
+        at_sofr_start = st.number_input("SOFR start (%)", 0.5, 10.0, 4.33, 0.01, key="at_s") / 100
+        at_sofr_end   = st.number_input("SOFR end (%)",   0.5, 10.0, 4.08, 0.01, key="at_e") / 100
+    with col_at2:
+        at_tenor  = st.selectbox("Position tenor (years)", [2.0, 5.0, 7.0, 10.0, 20.0, 30.0],
+                                  index=3, key="at_ten")
+        at_dt_mo  = st.selectbox("Holding period", [1, 3, 6, 12], index=0, key="at_dt",
+                                  format_func=lambda x: f"{x} month{'s' if x > 1 else ''}")
+    with col_at3:
+        at_short = st.selectbox("Steepener short leg",  [1.0, 2.0, 3.0, 5.0], index=1, key="at_short")
+        at_long  = st.selectbox("Steepener long leg",   [5.0, 7.0, 10.0, 30.0], index=2, key="at_long")
+
+    try:
+        from datetime import date as _attrdate
+        _c_s = _attr_flat_curve(_attrdate.today(), at_sofr_start)
+        _c_e = _attr_flat_curve(_attrdate.today(), at_sofr_end)
+        _dt  = float(at_dt_mo) / 12.0
+
+        r = _attr_single_period(_c_s, _c_e, float(at_tenor), _dt)
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Total (actual)", f"{r.total_actual_bps:.2f} bps")
+        col_m2.metric("Yield Δ", f"{r.delta_y_bps:.1f} bps",
+                      delta=f"start {r.yield_start_pct:.3f}% → end {r.yield_end_pct:.3f}%",
+                      delta_color="inverse")
+        col_m3.metric("Modified Duration", f"{r.modified_duration:.2f}y")
+        col_m4.metric("Residual", f"{r.residual_bps:.3f} bps")
+
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            st.subheader("Attribution Waterfall")
+            components = {
+                "Carry":     r.carry_bps,
+                "Roll-Down": r.rolldown_bps,
+                "Duration":  r.duration_bps,
+                "Convexity": r.convexity_bps,
+                "Residual":  r.residual_bps,
+            }
+            labels = list(components.keys())
+            values = list(components.values())
+            bar_colors = ["steelblue" if v >= 0 else "tomato" for v in values]
+
+            import matplotlib.pyplot as _attrplt
+            fig_at, ax_at = _attrplt.subplots(figsize=(6, 4))
+            bars_at = ax_at.barh(labels, values, color=bar_colors, edgecolor="white", height=0.6)
+            ax_at.axvline(0, color="grey", linewidth=0.8, linestyle="--")
+            for bar, val in zip(bars_at, values):
+                offset = 0.05 if val >= 0 else -0.05
+                ha = "left" if val >= 0 else "right"
+                ax_at.text(val + offset, bar.get_y() + bar.get_height() / 2,
+                            f"{val:.2f}", va="center", ha=ha, fontsize=9)
+            ax_at.set_xlabel(f"bps / {at_dt_mo}M")
+            ax_at.set_title(
+                f"{int(at_tenor)}Y position — SOFR {at_sofr_start*100:.2f}% → {at_sofr_end*100:.2f}%"
+            )
+            ax_at.spines["top"].set_visible(False)
+            ax_at.spines["right"].set_visible(False)
+            st.pyplot(fig_at, use_container_width=True)
+            _attrplt.close()
+
+        with col_b:
+            st.subheader("Attribution Summary Table")
+            attr_data = {
+                "Component": ["Carry", "Roll-Down", "Duration", "Convexity",
+                               "Total (approx)", "Total (actual)", "Residual"],
+                "bps": [
+                    r.carry_bps, r.rolldown_bps, r.duration_bps, r.convexity_bps,
+                    r.total_approx_bps, r.total_actual_bps, r.residual_bps,
+                ],
+                "% of Total": [
+                    v / r.total_actual_bps * 100 if abs(r.total_actual_bps) > 1e-8 else 0.0
+                    for v in [r.carry_bps, r.rolldown_bps, r.duration_bps, r.convexity_bps,
+                               r.total_approx_bps, r.total_actual_bps, r.residual_bps]
+                ],
+            }
+            import pandas as _pd_at
+            at_df = _pd_at.DataFrame(attr_data)
+            st.dataframe(
+                at_df.style.format({"bps": "{:.3f}", "% of Total": "{:.1f}%"})
+                           .background_gradient(cmap="RdYlGn", subset=["bps"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                f"Modified Duration: {r.modified_duration:.3f}y | "
+                f"Convexity: {r.convexity_years2:.2f}y²"
+            )
+
+        # ── Steepener attribution ──────────────────────────────────────────────
+        st.subheader(f"DV01-Neutral {int(at_short)}s{int(at_long)}s Steepener Attribution")
+        if at_short >= at_long:
+            st.warning("Short tenor must be less than long tenor.")
+        else:
+            steep = _attr_steepener_fn(_c_s, _c_e, float(at_short), float(at_long), _dt)
+
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            col_s1.metric("Net Total", f"{steep['net_total_bps']:.2f} bps")
+            col_s2.metric("Net Carry", f"{steep['net_carry_bps']:.2f} bps")
+            col_s3.metric("Net Roll-Down", f"{steep['net_rolldown_bps']:.2f} bps")
+            col_s4.metric("DV01 Ratio", f"{steep['dv01_ratio']:.3f}×",
+                           help=f"recv {int(at_short)}Y notional = {steep['dv01_ratio']:.3f} × pay {int(at_long)}Y notional")
+
+            steep_labels = [
+                f"Carry (rcv {int(at_short)}Y)",
+                f"Carry (pay {int(at_long)}Y)",
+                "Net Carry",
+                f"Roll-Down (rcv {int(at_short)}Y)",
+                f"Roll-Down (pay {int(at_long)}Y)",
+                "Net Roll-Down",
+                f"Duration (net)",
+                "Net Total",
+            ]
+            short_r = steep["short_leg"]
+            long_r  = steep["long_leg"]
+            dv01r   = steep["dv01_ratio"]
+            steep_values = [
+                short_r.carry_bps * dv01r,
+                -long_r.carry_bps,
+                steep["net_carry_bps"],
+                short_r.rolldown_bps * dv01r,
+                -long_r.rolldown_bps,
+                steep["net_rolldown_bps"],
+                steep["net_duration_bps"],
+                steep["net_total_bps"],
+            ]
+            s_colors = ["steelblue" if v >= 0 else "tomato" for v in steep_values]
+            fig_st, ax_st = _attrplt.subplots(figsize=(7, 4.5))
+            bars_st = ax_st.barh(steep_labels, steep_values, color=s_colors,
+                                  edgecolor="white", height=0.6)
+            ax_st.axvline(0, color="grey", linewidth=0.8, linestyle="--")
+            for bar, val in zip(bars_st, steep_values):
+                offset = 0.03 if val >= 0 else -0.03
+                ha = "left" if val >= 0 else "right"
+                ax_st.text(val + offset, bar.get_y() + bar.get_height() / 2,
+                            f"{val:.2f}", va="center", ha=ha, fontsize=8)
+            ax_st.set_xlabel(f"bps / {at_dt_mo}M (DV01-scaled)")
+            ax_st.set_title(
+                f"Steepener: rcv {int(at_short)}Y × {dv01r:.2f} / pay {int(at_long)}Y"
+            )
+            ax_st.spines["top"].set_visible(False)
+            ax_st.spines["right"].set_visible(False)
+            st.pyplot(fig_st, use_container_width=True)
+            _attrplt.close()
+
+    except Exception as e:
+        st.error(f"Attribution error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 390 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 445 tests ✅ | Sharpe 0.282 OOS"
 )
-
-# Already written above — SABR tab appended below footer line
