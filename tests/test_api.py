@@ -646,3 +646,76 @@ class TestCapFloorEndpoints:
         vols = client.get("/cap/strip-vols").json()["caplet_vols"]
         expiries = [v["expiry_years"] for v in vols]
         assert expiries == sorted(expiries)
+
+
+# ── Monte Carlo / VaR endpoints ───────────────────────────────────────────────
+
+class TestMCVaREndpoints:
+
+    def test_mc_var_200(self):
+        r = client.post("/mc/var", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "portfolio_dv01": 10_000, "horizon_days": 1,
+            "confidence": 0.99, "n_paths": 2000,
+        })
+        assert r.status_code == 200
+
+    def test_mc_var_negative_for_long_duration(self):
+        body = client.post("/mc/var", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "portfolio_dv01": 10_000, "horizon_days": 1,
+            "confidence": 0.99, "n_paths": 2000,
+        }).json()
+        assert body["var_usd"] < 0
+
+    def test_mc_var_keys(self):
+        body = client.post("/mc/var", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "portfolio_dv01": 10_000, "horizon_days": 1,
+            "confidence": 0.99, "n_paths": 1000,
+        }).json()
+        for key in ["var_usd", "cvar_usd", "var_bps", "pnl_percentiles", "n_paths"]:
+            assert key in body
+
+    def test_mc_var_cvar_worse_than_var(self):
+        body = client.post("/mc/var", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "portfolio_dv01": 10_000, "horizon_days": 1,
+            "confidence": 0.99, "n_paths": 2000,
+        }).json()
+        assert body["cvar_usd"] <= body["var_usd"]
+
+    def test_mc_caplet_200(self):
+        r = client.post("/mc/caplet", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "strike": 0.04, "t_reset": 1.0, "t_pay": 1.25,
+            "notional": 1_000_000, "n_paths": 2000,
+        })
+        assert r.status_code == 200
+
+    def test_mc_caplet_positive_pv(self):
+        body = client.post("/mc/caplet", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "strike": 0.04, "t_reset": 1.0, "t_pay": 1.25,
+            "notional": 1_000_000, "n_paths": 3000,
+        }).json()
+        assert body["mc_pv"] > 0
+
+    def test_mc_caplet_keys(self):
+        body = client.post("/mc/caplet", json={
+            "sofr_on": 0.0433, "hw_a": 0.05, "hw_sigma": 0.010,
+            "strike": 0.04, "t_reset": 1.0, "t_pay": 1.25,
+            "n_paths": 1000,
+        }).json()
+        for key in ["mc_pv", "mc_stderr", "black76_pv", "forward_rate_pct"]:
+            assert key in body
+
+    def test_zcb_convergence_200(self):
+        r = client.get("/mc/zcb-convergence")
+        assert r.status_code == 200
+
+    def test_zcb_convergence_keys(self):
+        body = client.get("/mc/zcb-convergence").json()
+        assert "convergence" in body
+        assert "analytical" in body
+        assert len(body["convergence"]) > 0

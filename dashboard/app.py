@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 495 passing ✅")
+    st.markdown("**Tests:** 566 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -65,6 +65,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "📐 SABR Smile",
     "🏦 Return Attribution",
     "🔔 Caps & Floors",
+    "🎲 Hull-White MC & VaR",
 ])
 
 
@@ -1592,9 +1593,173 @@ with tab15:
         st.error(f"Cap/Floor error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 16: Hull-White Monte Carlo & VaR
+# ─────────────────────────────────────────────────────────────────────────────
+with tab16:
+    st.header("Hull-White 1F Monte Carlo Simulation & VaR")
+    st.markdown(
+        "The **Hull-White model** for the short rate:\n\n"
+        "dr_t = [θ(t) − a·r_t] dt + σ·dW_t\n\n"
+        "θ(t) is calibrated to fit the initial SOFR curve exactly. "
+        "Simulation uses the **exact Ornstein-Uhlenbeck transition** — no Euler discretization error.\n\n"
+        "- **VaR**: worst-case loss at given confidence over the horizon\n"
+        "- **CVaR (Expected Shortfall)**: mean loss beyond VaR — more conservative risk measure"
+    )
+    from sofr_engine.monte_carlo import (
+        HullWhiteParams as _HWP, simulate_hw as _sim_hw,
+        portfolio_var_hw as _pvar_hw, parametric_var as _pvar_param,
+        convergence_diagnostics as _conv_diag, price_zcb_mc as _zcb_mc,
+    )
+    from sofr_engine.bootstrap import flat_sofr_curve as _mc_flat
+
+    col_hw1, col_hw2, col_hw3 = st.columns(3)
+    with col_hw1:
+        hw_sofr   = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="hw_sofr") / 100
+        hw_a      = st.slider("Mean reversion a", 0.00, 0.30, 0.05, 0.01, key="hw_a")
+        hw_sigma  = st.slider("Vol σ (% /√yr)", 0.20, 3.00, 1.00, 0.05, key="hw_sig") / 100
+    with col_hw2:
+        hw_dv01   = st.number_input("Portfolio DV01 ($/bp)", -50_000, 50_000, 10_000, 1_000, key="hw_dv")
+        hw_conf   = st.selectbox("VaR confidence", [0.90, 0.95, 0.99], index=2, key="hw_conf")
+        hw_horiz  = st.selectbox("Horizon (days)", [1, 5, 10, 21], index=0, key="hw_hor")
+    with col_hw3:
+        hw_npaths = st.select_slider("n_paths", [1_000, 5_000, 10_000, 20_000], value=10_000, key="hw_n")
+        hw_mat    = st.selectbox("Simulation horizon (y)", [0.5, 1.0, 2.0, 5.0], index=1, key="hw_mat")
+
+    try:
+        from datetime import date as _hwdate
+        _hw_curve  = _mc_flat(_hwdate.today(), hw_sofr)
+        _hw_params = _HWP(a=hw_a, sigma=hw_sigma)
+
+        # VaR computation
+        var_result = _pvar_hw(
+            _hw_curve, _hw_params,
+            portfolio_dv01 = hw_dv01,
+            horizon        = hw_horiz / 252.0,
+            confidence     = hw_conf,
+            n_paths        = hw_npaths,
+            seed           = 42,
+        )
+        par_result = _pvar_param(hw_dv01, hw_sigma * 10_000, hw_horiz / 252.0, hw_conf)
+
+        col_v1, col_v2, col_v3, col_v4 = st.columns(4)
+        col_v1.metric(f"MC VaR ({int(hw_conf*100)}%)",
+                      f"${var_result['var_usd']:,.0f}")
+        col_v2.metric("MC CVaR (ES)",
+                      f"${var_result['cvar_usd']:,.0f}")
+        col_v3.metric("Parametric VaR",
+                      f"${-par_result['var_usd']:,.0f}",
+                      delta="delta-normal")
+        col_v4.metric("VaR in bps",
+                      f"{abs(var_result['var_bps']):.1f} bps")
+
+        # P&L distribution
+        col_hwa, col_hwb = st.columns(2)
+        with col_hwa:
+            st.subheader("P&L Distribution (MC)")
+            import matplotlib.pyplot as _hwplt
+
+            sim = _sim_hw(_hw_curve, _hw_params, horizon=hw_horiz/252.0,
+                          n_steps=5, n_paths=hw_npaths, seed=42)
+            r_h = sim.r_paths[:, -1]
+            from sofr_engine.monte_carlo import zcb_price_hw as _zcb_hw
+            p_new = _zcb_hw(r_h, hw_horiz/252.0, hw_horiz/252.0 + 10.0, _hw_curve, _hw_params)
+            from sofr_engine.monte_carlo import _inst_forward as _hwf
+            y_old = _hw_curve.zero_rate(10.0)
+            y_new = -np.log(np.maximum(p_new, 1e-10)) / 10.0
+            pnl   = hw_dv01 * (-(y_new - y_old) * 10_000)
+
+            fig_hw, ax_hw = _hwplt.subplots(figsize=(6, 4))
+            ax_hw.hist(pnl, bins=60, color="steelblue", alpha=0.7, density=True,
+                       edgecolor="white", linewidth=0.3)
+            ax_hw.axvline(var_result["var_usd"], color="red", linewidth=2,
+                           label=f"VaR {int(hw_conf*100)}%: ${var_result['var_usd']:,.0f}")
+            ax_hw.axvline(var_result["cvar_usd"], color="darkred", linewidth=1.5,
+                           linestyle="--", label=f"CVaR: ${var_result['cvar_usd']:,.0f}")
+            ax_hw.axvline(0, color="grey", linewidth=0.8, linestyle=":")
+            ax_hw.set_xlabel("P&L ($)")
+            ax_hw.set_ylabel("Density")
+            ax_hw.set_title(f"{hw_horiz}-day P&L (DV01={hw_dv01:+,d})")
+            ax_hw.legend(fontsize=9)
+            ax_hw.spines["top"].set_visible(False)
+            ax_hw.spines["right"].set_visible(False)
+            st.pyplot(fig_hw, use_container_width=True)
+            _hwplt.close()
+
+        with col_hwb:
+            st.subheader("Short-Rate Paths (HW)")
+            sim_long = _sim_hw(_hw_curve, _hw_params, horizon=float(hw_mat),
+                               n_steps=100, n_paths=min(200, hw_npaths), seed=42)
+            times_l, mean_l, std_l = sim_long.expected_path()
+
+            fig_hw2, ax_hw2 = _hwplt.subplots(figsize=(6, 4))
+            # Plot a sample of paths
+            n_show = min(30, sim_long.n_paths)
+            for i in range(n_show):
+                ax_hw2.plot(times_l, sim_long.r_paths[i] * 100, alpha=0.15,
+                             color="steelblue", linewidth=0.6)
+            ax_hw2.plot(times_l, mean_l * 100, "steelblue", linewidth=2, label="Mean")
+            ax_hw2.fill_between(times_l,
+                                 (mean_l - std_l) * 100,
+                                 (mean_l + std_l) * 100,
+                                 alpha=0.25, color="steelblue", label="±1σ")
+            ax_hw2.axhline(hw_sofr * 100, color="grey", linestyle=":", linewidth=1,
+                            label=f"SOFR ON {hw_sofr*100:.2f}%")
+            ax_hw2.set_xlabel("Time (years)")
+            ax_hw2.set_ylabel("Short rate (%)")
+            ax_hw2.set_title(f"HW Short-Rate Simulation (a={hw_a:.2f}, σ={hw_sigma*100:.2f}%)")
+            ax_hw2.legend(fontsize=9)
+            ax_hw2.spines["top"].set_visible(False)
+            ax_hw2.spines["right"].set_visible(False)
+            st.pyplot(fig_hw2, use_container_width=True)
+            _hwplt.close()
+
+        # Convergence diagnostics
+        st.subheader("MC Convergence: ZCB Pricing Error vs n_paths")
+        import pandas as _hwpd
+        conv = _conv_diag(_hw_curve, _hw_params, test_maturity=5.0,
+                          path_counts=[100, 500, 1000, 2000, 5000], seed=42)
+        conv_df = _hwpd.DataFrame(conv)
+        col_cva, col_cvb = st.columns(2)
+        with col_cva:
+            fig_conv, ax_conv = _hwplt.subplots(figsize=(5.5, 3.5))
+            ax_conv.plot(conv_df["n_paths"], conv_df["error_bps"],
+                         "o-", color="darkorange", linewidth=2, markersize=5)
+            ax_conv.set_xscale("log")
+            ax_conv.set_xlabel("n_paths (log scale)")
+            ax_conv.set_ylabel("Error (bps)")
+            ax_conv.set_title("MC vs Analytical ZCB Price (5Y)")
+            ax_conv.spines["top"].set_visible(False)
+            ax_conv.spines["right"].set_visible(False)
+            st.pyplot(fig_conv, use_container_width=True)
+            _hwplt.close()
+        with col_cvb:
+            st.dataframe(
+                conv_df.style.format({"mc_price": "{:.6f}", "error_bps": "{:.3f}",
+                                       "mc_stderr": "{:.8f}"}),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                f"Analytical 5Y ZCB = {_hw_curve.df(5.0):.6f}. "
+                "MC error ∝ 1/√n — halving the error requires 4× the paths."
+            )
+
+        # P&L percentile table
+        st.subheader("P&L Percentile Table")
+        pcts = var_result["pnl_percentiles"]
+        pct_df = _hwpd.DataFrame({
+            "Percentile": list(pcts.keys()),
+            "P&L ($)": [f"${v:,.0f}" for v in pcts.values()],
+        })
+        st.dataframe(pct_df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"MC/VaR error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 495 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 566 tests ✅ | Sharpe 0.282 OOS"
 )

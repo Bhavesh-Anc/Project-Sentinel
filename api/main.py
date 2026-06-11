@@ -59,6 +59,10 @@ from models.return_attribution import (
 from sofr_engine.cap_floor import (
     Cap, Floor, CapFloorVolSurface, strip_caplet_vols, price_cap_floor,
 )
+from sofr_engine.monte_carlo import (
+    HullWhiteParams, simulate_hw, price_zcb_mc, price_caplet_mc,
+    portfolio_var_hw, parametric_var, convergence_diagnostics,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -503,6 +507,27 @@ def vol_surface():
 
 # ── SABR smile ─────────────────────────────────────────────────────────────────
 
+class MCVaRRequest(BaseModel):
+    sofr_on:        float = Field(0.0433, ge=0.0, le=0.20, description="Flat curve SOFR (decimal)")
+    hw_a:           float = Field(0.05,  ge=0.0, le=2.0,   description="HW mean reversion a")
+    hw_sigma:       float = Field(0.010, gt=0.0, le=0.20,  description="HW short-rate vol σ")
+    portfolio_dv01: float = Field(10_000.0, description="Portfolio DV01 in $/bp (positive=long)")
+    horizon_days:   int   = Field(1, ge=1, le=252,          description="VaR horizon in days")
+    confidence:     float = Field(0.99, gt=0.5, lt=1.0,    description="Confidence level")
+    n_paths:        int   = Field(10_000, ge=100, le=200_000)
+
+
+class MCCapletRequest(BaseModel):
+    sofr_on:      float = Field(0.0433, ge=0.0, le=0.20)
+    hw_a:         float = Field(0.05,  ge=0.0, le=2.0)
+    hw_sigma:     float = Field(0.010, gt=0.0, le=0.20)
+    strike:       float = Field(0.04,  ge=0.0, le=0.20)
+    t_reset:      float = Field(1.0,   ge=0.01, le=30.0)
+    t_pay:        float = Field(1.25,  ge=0.01, le=30.0)
+    notional:     float = Field(1_000_000.0)
+    n_paths:      int   = Field(10_000, ge=500, le=100_000)
+
+
 class CapFloorRequest(BaseModel):
     sofr_on:         float = Field(0.0433, ge=0.0, le=0.20, description="Flat curve overnight SOFR (decimal)")
     maturity_years:  float = Field(5.0, ge=0.25, le=30.0, description="Cap/floor maturity in years")
@@ -637,6 +662,88 @@ def sabr_surface_endpoint():
         "description": "SABR params calibrated to ATM surface (USD convention: beta=0.5, rho=-0.25, nu=0.40)",
         "nodes": rows,
     }
+
+
+# ── Monte Carlo / VaR ─────────────────────────────────────────────────────────
+
+@app.post("/mc/var", tags=["Monte Carlo"])
+def mc_var_endpoint(req: MCVaRRequest):
+    """
+    Monte Carlo Value-at-Risk under Hull-White 1-factor model.
+
+    Simulates the short-rate process exactly (no Euler discretization) and
+    computes VaR / CVaR for a fixed-income portfolio characterised by its DV01.
+    Returns the full P&L percentile distribution and 1-day yield vol estimate.
+    """
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        params = HullWhiteParams(a=req.hw_a, sigma=req.hw_sigma)
+        result = portfolio_var_hw(
+            curve, params,
+            portfolio_dv01 = req.portfolio_dv01,
+            horizon        = req.horizon_days / 252.0,
+            confidence     = req.confidence,
+            n_paths        = req.n_paths,
+            seed           = 42,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/mc/caplet", tags=["Monte Carlo"])
+def mc_caplet_endpoint(req: MCCapletRequest):
+    """
+    Price a SOFR caplet by Hull-White Monte Carlo simulation.
+
+    Returns MC price with 95% confidence interval and a Black-76 benchmark
+    for comparison. Demonstrates convergence of MC to analytical pricing.
+    """
+    if req.t_pay <= req.t_reset:
+        raise HTTPException(status_code=422, detail="t_pay must be > t_reset")
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        params = HullWhiteParams(a=req.hw_a, sigma=req.hw_sigma)
+        result = price_caplet_mc(
+            curve, params,
+            strike   = req.strike,
+            t_reset  = req.t_reset,
+            t_pay    = req.t_pay,
+            notional = req.notional,
+            n_paths  = req.n_paths,
+            seed     = 42,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/mc/zcb-convergence", tags=["Monte Carlo"])
+def mc_zcb_convergence_endpoint(
+    sofr_on:  float = 0.0433,
+    maturity: float = 5.0,
+    hw_a:     float = 0.05,
+    hw_sigma: float = 0.010,
+):
+    """
+    Hull-White MC vs analytical ZCB price convergence as n_paths increases.
+
+    Shows how MC pricing error (in bps) decreases as 1/√n_paths.
+    Useful for demonstrating MC convergence to the exact bond price.
+    """
+    try:
+        curve   = _flat_curve(sofr_on)
+        params  = HullWhiteParams(a=hw_a, sigma=hw_sigma)
+        results = convergence_diagnostics(curve, params,
+                                          test_maturity=maturity, seed=42)
+        return {
+            "maturity":   maturity,
+            "sofr_on":    sofr_on,
+            "analytical": round(float(curve.df(maturity)), 8),
+            "convergence": results,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # ── Cap / Floor pricing ────────────────────────────────────────────────────────
