@@ -982,3 +982,76 @@ class TestG2ppEndpoints:
                                                "n_paths": 1000}).json()
         for k in ["var_usd", "cvar_usd", "var_bps", "pnl_mean", "pnl_std", "n_paths"]:
             assert k in body
+
+
+# ── CDS endpoints ─────────────────────────────────────────────────────────────
+
+_CDS_BASE = {"sofr_on": 0.0433, "maturity_years": 5.0, "coupon": 0.01,
+             "notional": 10_000_000.0, "recovery": 0.40, "hazard_rate": 0.02}
+
+
+class TestCDSEndpoints:
+
+    def test_price_200(self):
+        r = client.post("/cds/price", json=_CDS_BASE)
+        assert r.status_code == 200
+
+    def test_price_keys(self):
+        body = client.post("/cds/price", json=_CDS_BASE).json()
+        for k in ["pv", "fee_leg_pv", "prot_leg_pv", "par_spread_bps",
+                  "risky_annuity", "cs01", "dv01"]:
+            assert k in body
+
+    def test_fee_leg_positive(self):
+        body = client.post("/cds/price", json=_CDS_BASE).json()
+        assert body["fee_leg_pv"] > 0
+
+    def test_prot_leg_positive(self):
+        body = client.post("/cds/price", json=_CDS_BASE).json()
+        assert body["prot_leg_pv"] > 0
+
+    def test_par_spread_positive(self):
+        body = client.post("/cds/price", json=_CDS_BASE).json()
+        assert body["par_spread_bps"] > 0
+
+    def test_buy_vs_sell_opposite_pv(self):
+        buy  = client.post("/cds/price", json={**_CDS_BASE, "buy_protection": True}).json()
+        sell = client.post("/cds/price", json={**_CDS_BASE, "buy_protection": False}).json()
+        assert abs(buy["pv"] + sell["pv"]) < 1.0
+
+    def test_bootstrap_200(self):
+        r = client.post("/cds/bootstrap", json={
+            "sofr_on": 0.0433,
+            "maturities": [1.0, 3.0, 5.0],
+            "spreads": [0.005, 0.010, 0.015],
+        })
+        assert r.status_code == 200
+
+    def test_bootstrap_reprices_spreads(self):
+        body = client.post("/cds/bootstrap", json={
+            "sofr_on": 0.0433,
+            "maturities": [1.0, 3.0, 5.0],
+            "spreads": [0.005, 0.010, 0.015],
+        }).json()
+        for entry in body["schedule"]:
+            diff = abs(entry["market_spread_bps"] - entry["model_spread_bps"])
+            assert diff < 0.01
+
+    def test_bootstrap_schedule_keys(self):
+        body = client.post("/cds/bootstrap", json={
+            "sofr_on": 0.0433,
+            "maturities": [1.0, 5.0],
+            "spreads": [0.005, 0.015],
+        }).json()
+        entry = body["schedule"][0]
+        for k in ["maturity_years", "market_spread_bps", "model_spread_bps",
+                  "hazard_rate_bps", "survival_prob"]:
+            assert k in entry
+
+    def test_bootstrap_mismatched_lengths_422(self):
+        r = client.post("/cds/bootstrap", json={
+            "sofr_on": 0.0433,
+            "maturities": [1.0, 5.0],
+            "spreads": [0.01],
+        })
+        assert r.status_code == 422

@@ -49,7 +49,7 @@ with st.sidebar:
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -69,6 +69,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🏛️ Bermudan Swaption",
     "📐 CMS Pricing",
     "🔵 G2++ Two-Factor",
+    "🛡️ CDS Pricing",
 ])
 
 
@@ -2265,9 +2266,150 @@ with tab19:
         st.error(f"G2++ error: {e}")
 
 
+# TAB 20: CDS Pricing
+# ─────────────────────────────────────────────────────────────────────────────
+with tab20:
+    st.header("Credit Default Swap (CDS) Pricing")
+    st.markdown(
+        "A **CDS** transfers default risk: the protection buyer pays a running spread "
+        "(coupon) and receives par minus recovery on default. "
+        "The standard ISDA model uses a **piecewise-constant hazard rate** curve bootstrapped "
+        "from market par spreads.\n\n"
+        "- **Fee leg**: periodic spread payments on surviving notional\n"
+        "- **Protection leg**: (1-R) × notional contingent on default\n"
+        "- **CS01**: sensitivity to 1bp shift in all hazard rates\n"
+        "- **Hazard bootstrap**: strip survival probabilities from CDS term structure\n"
+    )
+
+    from sofr_engine.credit import (
+        HazardRateCurve as _HC,
+        CDSContract as _CDSC,
+        bootstrap_hazard_curve as _bhaz,
+        cds_pv as _cds_pv_dash,
+        cds_par_spread as _cds_par_dash,
+    )
+    from sofr_engine.bootstrap import flat_sofr_curve as _cds_flat_crv
+    import numpy as np
+    import matplotlib.pyplot as _cdsplt
+
+    cds_sub = st.radio("Section", ["Single CDS Pricer", "Hazard Rate Bootstrap"],
+                       horizontal=True, key="cds_sub")
+
+    if cds_sub == "Single CDS Pricer":
+        col_d1, col_d2, col_d3 = st.columns(3)
+        with col_d1:
+            d_sofr   = st.number_input("SOFR (%)", 1.0, 8.0, 4.33, 0.01, key="d_sofr") / 100
+            d_mat    = st.number_input("Maturity (y)", 0.5, 20.0, 5.0, 0.5, key="d_mat")
+            d_coupon = st.number_input("Coupon (bps)", 0, 500, 100, 5, key="d_cpn") / 10_000
+        with col_d2:
+            d_haz    = st.number_input("Hazard rate (bps)", 1, 500, 200, 5, key="d_haz") / 10_000
+            d_rec    = st.slider("Recovery (%)", 0, 80, 40, 5, key="d_rec") / 100
+            d_not    = st.number_input("Notional ($M)", 0.1, 100.0, 10.0, 1.0, key="d_not") * 1e6
+        with col_d3:
+            d_side   = st.radio("Side", ["Buy Protection", "Sell Protection"], key="d_side")
+
+        try:
+            _d_crv  = _cds_flat_crv(__import__("datetime").date.today(), d_sofr)
+            _d_hc   = _HC.flat(d_haz, [d_mat], recovery=d_rec)
+            _d_cds  = _CDSC(maturity_years=d_mat, coupon=d_coupon, notional=d_not,
+                             recovery=d_rec, buy_protection=(d_side == "Buy Protection"))
+            _d_res  = _cds_pv_dash(_d_crv, _d_hc, _d_cds)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("CDS PV", f"${_d_res.pv:,.0f}")
+            c2.metric("Par Spread", f"{_d_res.par_spread_bps:.1f} bps")
+            c3.metric("CS01", f"${_d_res.cs01:,.0f}")
+            c4.metric("DV01", f"${_d_res.dv01:,.0f}")
+
+            col_da, col_db = st.columns(2)
+            with col_da:
+                # Par spread vs maturity
+                mats_v  = np.linspace(0.5, 10.0, 40)
+                par_spr = [_cds_par_dash(_d_crv, _HC.flat(d_haz, [T], recovery=d_rec), T) * 10_000
+                           for T in mats_v]
+                fig_d1, ax_d1 = _cdsplt.subplots(figsize=(5, 3.5))
+                ax_d1.plot(mats_v, par_spr, color="firebrick", linewidth=2)
+                ax_d1.axvline(d_mat, color="k", linestyle="--", alpha=0.5, label=f"T={d_mat}y")
+                ax_d1.set_xlabel("Maturity (years)")
+                ax_d1.set_ylabel("Par Spread (bps)")
+                ax_d1.set_title("CDS Term Structure")
+                ax_d1.legend()
+                ax_d1.spines["top"].set_visible(False)
+                ax_d1.spines["right"].set_visible(False)
+                st.pyplot(fig_d1, use_container_width=True)
+                _cdsplt.close()
+
+            with col_db:
+                # Survival probability curve
+                t_surv = np.linspace(0, d_mat * 1.5, 100)
+                surv   = [_d_hc.survival(t) for t in t_surv]
+                fig_d2, ax_d2 = _cdsplt.subplots(figsize=(5, 3.5))
+                ax_d2.plot(t_surv, [s * 100 for s in surv], color="steelblue", linewidth=2)
+                ax_d2.set_xlabel("Time (years)")
+                ax_d2.set_ylabel("Survival Probability (%)")
+                ax_d2.set_title(f"Survival Curve  λ={d_haz*10000:.0f}bps, R={d_rec*100:.0f}%")
+                ax_d2.spines["top"].set_visible(False)
+                ax_d2.spines["right"].set_visible(False)
+                st.pyplot(fig_d2, use_container_width=True)
+                _cdsplt.close()
+
+        except Exception as e:
+            st.error(f"CDS error: {e}")
+
+    else:  # Bootstrap
+        st.subheader("Hazard Rate Bootstrap from Par Spreads")
+        st.markdown("Enter market CDS par spreads to bootstrap the survival probability curve.")
+
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            b_sofr = st.number_input("SOFR (%)", 1.0, 8.0, 4.33, 0.01, key="b_sofr2") / 100
+            b_rec  = st.slider("Recovery (%)", 0, 80, 40, 5, key="b_rec") / 100
+        with col_b2:
+            b_mats   = [1.0, 2.0, 3.0, 5.0, 7.0, 10.0]
+            b_defaults = [60, 90, 120, 160, 180, 200]
+            b_spreads_bps = []
+            for m, d in zip(b_mats, b_defaults):
+                b_spreads_bps.append(
+                    st.number_input(f"{m:.0f}Y par spread (bps)", 1, 1000, d, 5, key=f"bs_{m}"))
+
+        try:
+            _b_crv  = _cds_flat_crv(__import__("datetime").date.today(), b_sofr)
+            _b_spr  = [s / 10_000 for s in b_spreads_bps]
+            _b_hc   = _bhaz(_b_crv, b_mats, _b_spr, recovery=b_rec)
+
+            import pandas as _bpd
+            rows = []
+            for T, s in zip(b_mats, _b_spr):
+                rows.append({
+                    "Maturity (y)":       T,
+                    "Market Spread (bps)": round(s * 10_000, 1),
+                    "Hazard Rate (bps)":   round(_b_hc.hazard_at(T) * 10_000, 2),
+                    "Survival Prob (%)":   round(_b_hc.survival(T) * 100, 3),
+                    "Default Prob (%)":    round((1 - _b_hc.survival(T)) * 100, 3),
+                })
+            st.dataframe(_bpd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            # Survival curve chart
+            t_plot = np.linspace(0, 10.5, 200)
+            surv_b = [_b_hc.survival(t) * 100 for t in t_plot]
+            fig_b, ax_b = _cdsplt.subplots(figsize=(9, 4))
+            ax_b.plot(t_plot, surv_b, color="steelblue", linewidth=2)
+            ax_b.fill_between(t_plot, surv_b, 0, alpha=0.15, color="steelblue")
+            ax_b.set_xlabel("Time (years)")
+            ax_b.set_ylabel("Survival Probability (%)")
+            ax_b.set_title("Bootstrapped Survival Probability Curve")
+            ax_b.spines["top"].set_visible(False)
+            ax_b.spines["right"].set_visible(False)
+            st.pyplot(fig_b, use_container_width=True)
+            _cdsplt.close()
+
+        except Exception as e:
+            st.error(f"CDS bootstrap error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 745 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 801 tests ✅ | Sharpe 0.282 OOS"
 )

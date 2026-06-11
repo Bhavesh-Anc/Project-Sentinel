@@ -39,6 +39,17 @@ from .cap_floor import (
     cap_floor_parity_pv,
     CapFloorVolSurface, strip_caplet_vols, price_cap_floor,
 )
+from .credit import (
+    HazardRateCurve,
+    CDSContract,
+    CDSResult,
+    bootstrap_hazard_curve,
+    cds_pv,
+    cds_par_spread,
+    cds_cs01,
+    cds_dv01,
+    risky_annuity,
+)
 from .g2pp import (
     G2ppParams,
     G2ppSimResult,
@@ -100,6 +111,15 @@ __all__ = [
     "CapFloorVolSurface",
     "strip_caplet_vols",
     "price_cap_floor",
+    "HazardRateCurve",
+    "CDSContract",
+    "CDSResult",
+    "bootstrap_hazard_curve",
+    "cds_pv",
+    "cds_par_spread",
+    "cds_cs01",
+    "cds_dv01",
+    "risky_annuity",
     "G2ppParams",
     "G2ppSimResult",
     "g2pp_zcb",

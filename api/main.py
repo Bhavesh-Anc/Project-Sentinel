@@ -66,6 +66,13 @@ from sofr_engine.monte_carlo import (
 from sofr_engine.bermudan import (
     price_bermudan_swaption, price_european_swaption_hw,
 )
+from sofr_engine.credit import (
+    HazardRateCurve as _HazardCurve,
+    CDSContract as _CDSContract,
+    bootstrap_hazard_curve as _bootstrap_haz,
+    cds_pv as _cds_pv,
+    cds_par_spread as _cds_par,
+)
 from sofr_engine.g2pp import (
     G2ppParams,
     simulate_g2pp as _sim_g2pp,
@@ -583,6 +590,27 @@ class AttributionSteepenerRequest(BaseModel):
     dt_years:     float = Field(1/12, gt=0.0, le=5.0)
 
 
+class CDSRequest(BaseModel):
+    sofr_on:        float = Field(0.0433, ge=0.0, le=0.20, description="Risk-free SOFR rate")
+    maturity_years: float = Field(5.0, ge=0.25, le=20.0)
+    coupon:         float = Field(0.01, ge=0.0, le=0.20, description="Running coupon (decimal)")
+    notional:       float = Field(10_000_000.0)
+    recovery:       float = Field(0.40, ge=0.0, lt=1.0)
+    hazard_rate:    float = Field(0.02, gt=0.0, le=0.50, description="Flat hazard rate (decimal)")
+    buy_protection: bool  = True
+    freq:           int   = Field(4, ge=1, le=12)
+
+
+class CDSBootstrapRequest(BaseModel):
+    sofr_on:    float          = Field(0.0433, ge=0.0, le=0.20)
+    maturities: list[float]    = Field([1.0, 3.0, 5.0, 7.0, 10.0])
+    spreads:    list[float]    = Field([0.005, 0.010, 0.015, 0.020, 0.030],
+                                        description="Par CDS spreads (decimal)")
+    recovery:   float          = Field(0.40, ge=0.0, lt=1.0)
+    coupon:     float          = Field(0.01, ge=0.0, le=0.20)
+    notional:   float          = Field(10_000_000.0)
+
+
 class G2ppSwaptionRequest(BaseModel):
     sofr_on:     float = Field(0.0433, ge=0.0, le=0.20)
     a:           float = Field(0.05, ge=1e-4, le=2.0, description="x mean-reversion speed")
@@ -1062,6 +1090,73 @@ def attribution_steepener(req: AttributionSteepenerRequest):
                 "total_actual_bps": round(long_r.total_actual_bps, 4),
                 "modified_duration": round(long_r.modified_duration, 4),
             },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ── CDS pricing ───────────────────────────────────────────────────────────────
+
+@app.post("/cds/price", tags=["CDS"])
+def cds_price_endpoint(req: CDSRequest):
+    """
+    Price a CDS under piecewise-constant flat hazard rate model.
+    Returns fee leg, protection leg, par spread, CS01, DV01.
+    """
+    try:
+        curve = _flat_curve(req.sofr_on)
+        hc    = _HazardCurve.flat(req.hazard_rate, [req.maturity_years], recovery=req.recovery)
+        cds   = _CDSContract(
+            maturity_years = req.maturity_years,
+            coupon         = req.coupon,
+            notional       = req.notional,
+            recovery       = req.recovery,
+            freq           = req.freq,
+            buy_protection = req.buy_protection,
+        )
+        res = _cds_pv(curve, hc, cds)
+        return {
+            "pv":               res.pv,
+            "fee_leg_pv":       res.fee_leg_pv,
+            "prot_leg_pv":      res.prot_leg_pv,
+            "par_spread_bps":   res.par_spread_bps,
+            "risky_annuity":    res.risky_annuity,
+            "cs01":             res.cs01,
+            "dv01":             res.dv01,
+            "upfront":          res.upfront,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/cds/bootstrap", tags=["CDS"])
+def cds_bootstrap_endpoint(req: CDSBootstrapRequest):
+    """
+    Bootstrap hazard rate curve from par CDS spreads and reprice the term CDS.
+    """
+    if len(req.maturities) != len(req.spreads):
+        raise HTTPException(status_code=422,
+                            detail="maturities and spreads must have the same length")
+    try:
+        curve = _flat_curve(req.sofr_on)
+        hc    = _bootstrap_haz(curve, req.maturities, req.spreads, recovery=req.recovery)
+        schedule = []
+        for T, s_in in zip(req.maturities, req.spreads):
+            s_model = float(_cds_par(curve, hc, T))
+            cds_t   = _CDSContract(T, coupon=req.coupon, notional=req.notional,
+                                    recovery=req.recovery)
+            res_t   = _cds_pv(curve, hc, cds_t)
+            schedule.append({
+                "maturity_years":    round(T, 4),
+                "market_spread_bps": round(s_in * 10_000, 3),
+                "model_spread_bps":  round(s_model * 10_000, 6),
+                "hazard_rate_bps":   round(float(hc.hazard_at(T)) * 10_000, 3),
+                "survival_prob":     round(hc.survival(T), 6),
+                "cds_pv":            round(res_t.pv, 2),
+            })
+        return {
+            "schedule": schedule,
+            "recovery": req.recovery,
         }
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
