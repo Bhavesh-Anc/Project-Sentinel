@@ -39,6 +39,17 @@ from .cap_floor import (
     cap_floor_parity_pv,
     CapFloorVolSurface, strip_caplet_vols, price_cap_floor,
 )
+from .cms import (
+    CMSConvexityResult,
+    CMSCaplet,
+    CMSSpreadOption,
+    CMSSwap,
+    cms_convexity_adj,
+    cms_caplet_pv,
+    cms_floorlet_pv,
+    cms_caplet_floorlet_parity,
+    cms_spread_option_pv,
+)
 
 __all__ = [
     "DiscountCurve",
@@ -78,4 +89,13 @@ __all__ = [
     "CapFloorVolSurface",
     "strip_caplet_vols",
     "price_cap_floor",
+    "CMSConvexityResult",
+    "CMSCaplet",
+    "CMSSpreadOption",
+    "CMSSwap",
+    "cms_convexity_adj",
+    "cms_caplet_pv",
+    "cms_floorlet_pv",
+    "cms_caplet_floorlet_parity",
+    "cms_spread_option_pv",
 ]

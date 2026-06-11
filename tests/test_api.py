@@ -801,3 +801,124 @@ class TestBermudanEndpoints:
     def test_pay_receive_field_in_response(self):
         body = client.post("/bermudan/price", json=_BERM_BASE).json()
         assert body["pay_receive"] == "payer"
+
+
+# ── CMS endpoints ─────────────────────────────────────────────────────────────
+
+_CMS_CURVE = {"sofr_on": 0.0433}
+
+
+class TestCMSEndpoints:
+
+    def test_convexity_200(self):
+        r = client.post("/cms/convexity", json={
+            **_CMS_CURVE, "expiry": 1.0, "swap_tenor": 10.0, "vol": 0.30,
+        })
+        assert r.status_code == 200
+
+    def test_convexity_adj_positive(self):
+        body = client.post("/cms/convexity", json={
+            **_CMS_CURVE, "expiry": 1.0, "swap_tenor": 10.0, "vol": 0.30,
+        }).json()
+        assert body["convexity_adj_bps"] > 0
+
+    def test_convexity_keys(self):
+        body = client.post("/cms/convexity", json={
+            **_CMS_CURVE, "expiry": 1.0, "swap_tenor": 10.0, "vol": 0.30,
+        }).json()
+        for key in ["forward_swap_rate_pct", "convexity_adj_bps", "cms_rate_pct",
+                    "expiry", "swap_tenor", "model"]:
+            assert key in body
+
+    def test_convexity_cms_gt_forward(self):
+        body = client.post("/cms/convexity", json={
+            **_CMS_CURVE, "expiry": 1.0, "swap_tenor": 10.0, "vol": 0.30,
+        }).json()
+        assert body["cms_rate_pct"] > body["forward_swap_rate_pct"]
+
+    def test_convexity_replication_model(self):
+        body = client.post("/cms/convexity", json={
+            **_CMS_CURVE, "expiry": 1.0, "swap_tenor": 10.0, "vol": 0.30,
+            "model": "replication",
+        }).json()
+        assert body["model"] == "replication"
+        assert body["convexity_adj_bps"] >= 0
+
+    def test_caplet_200(self):
+        r = client.post("/cms/caplet", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25, "swap_tenor": 10.0,
+            "strike": 0.04, "vol": 0.30,
+        })
+        assert r.status_code == 200
+
+    def test_caplet_pv_positive(self):
+        body = client.post("/cms/caplet", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25, "swap_tenor": 10.0,
+            "strike": 0.04, "vol": 0.30,
+        }).json()
+        assert body["pv"] > 0
+
+    def test_caplet_keys(self):
+        body = client.post("/cms/caplet", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25, "swap_tenor": 10.0,
+            "strike": 0.04, "vol": 0.30,
+        }).json()
+        for key in ["pv", "cms_rate_pct", "forward_swap_rate_pct",
+                    "convexity_adj_bps", "strike_pct", "cap_floor"]:
+            assert key in body
+
+    def test_caplet_invalid_t_pay_422(self):
+        r = client.post("/cms/caplet", json={
+            **_CMS_CURVE, "t_fix": 1.5, "t_pay": 1.0, "swap_tenor": 10.0,
+            "strike": 0.04, "vol": 0.30,
+        })
+        assert r.status_code == 422
+
+    def test_spread_option_200(self):
+        r = client.post("/cms/spread-option", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25,
+            "long_tenor": 10.0, "short_tenor": 2.0, "spread_strike": 0.005,
+            "vol_long": 0.30, "vol_short": 0.30, "rho": 0.7,
+        })
+        assert r.status_code == 200
+
+    def test_spread_option_pv_positive(self):
+        body = client.post("/cms/spread-option", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25,
+            "long_tenor": 10.0, "short_tenor": 2.0, "spread_strike": 0.005,
+            "vol_long": 0.30, "vol_short": 0.30, "rho": 0.7,
+        }).json()
+        assert body["pv"] > 0
+
+    def test_spread_option_keys(self):
+        body = client.post("/cms/spread-option", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25,
+            "long_tenor": 10.0, "short_tenor": 2.0, "spread_strike": 0.005,
+            "vol_long": 0.30, "vol_short": 0.30, "rho": 0.7,
+        }).json()
+        for key in ["pv", "cms_rate_long_pct", "cms_rate_short_pct",
+                    "cms_spread_pct", "spread_strike_bps"]:
+            assert key in body
+
+    def test_spread_option_invalid_tenor_422(self):
+        r = client.post("/cms/spread-option", json={
+            **_CMS_CURVE, "t_fix": 1.0, "t_pay": 1.25,
+            "long_tenor": 2.0, "short_tenor": 10.0, "spread_strike": 0.005,
+            "vol_long": 0.30, "vol_short": 0.30, "rho": 0.7,
+        })
+        assert r.status_code == 422
+
+    def test_convexity_schedule_200(self):
+        r = client.get("/cms/convexity-schedule")
+        assert r.status_code == 200
+
+    def test_convexity_schedule_keys(self):
+        body = client.get("/cms/convexity-schedule").json()
+        assert "schedule" in body
+        assert len(body["schedule"]) > 0
+
+    def test_convexity_schedule_adj_grows_with_expiry(self):
+        body = client.get("/cms/convexity-schedule").json()
+        adjs = [e["convexity_adj_bps"] for e in body["schedule"]]
+        # Convexity adjustment should generally increase with expiry
+        assert adjs[-1] > adjs[0]

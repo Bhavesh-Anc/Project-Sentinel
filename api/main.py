@@ -66,6 +66,12 @@ from sofr_engine.monte_carlo import (
 from sofr_engine.bermudan import (
     price_bermudan_swaption, price_european_swaption_hw,
 )
+from sofr_engine.cms import (
+    CMSCaplet as _CMSCaplet,
+    CMSSpreadOption as _CMSSpreadOption,
+    CMSSwap as _CMSSwap,
+    cms_convexity_adj, cms_caplet_pv, cms_floorlet_pv, cms_spread_option_pv,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -570,6 +576,44 @@ class AttributionSteepenerRequest(BaseModel):
     dt_years:     float = Field(1/12, gt=0.0, le=5.0)
 
 
+class CMSConvexityRequest(BaseModel):
+    sofr_on:     float = Field(0.0433, ge=0.0, le=0.20, description="Flat SOFR curve level (decimal)")
+    expiry:      float = Field(1.0,    ge=0.01, le=30.0, description="Option expiry (years)")
+    swap_tenor:  float = Field(10.0,   ge=0.25, le=30.0, description="CMS swap tenor (years)")
+    vol:         float = Field(0.30,   gt=0.0,  le=5.0,  description="Black-76 swaption vol")
+    model:       Literal["linear_tsr", "replication"] = "linear_tsr"
+    freq:        int   = Field(2, ge=1, le=4, description="CMS swap reset frequency")
+
+
+class CMSCapletRequest(BaseModel):
+    sofr_on:     float = Field(0.0433, ge=0.0, le=0.20)
+    t_fix:       float = Field(1.0,    ge=0.01, le=30.0, description="Rate-fixing date (years)")
+    t_pay:       float = Field(1.25,   ge=0.01, le=30.0, description="Payment date (years)")
+    swap_tenor:  float = Field(10.0,   ge=0.25, le=30.0)
+    strike:      float = Field(0.04,   ge=0.0,  le=0.30)
+    notional:    float = Field(1_000_000.0)
+    cap_floor:   Literal["cap", "floor"] = "cap"
+    vol:         float = Field(0.30, gt=0.0, le=5.0)
+    freq:        int   = Field(2, ge=1, le=4)
+    model:       Literal["linear_tsr", "replication"] = "linear_tsr"
+
+
+class CMSSpreadRequest(BaseModel):
+    sofr_on:        float = Field(0.0433, ge=0.0, le=0.20)
+    t_fix:          float = Field(1.0,    ge=0.01, le=30.0)
+    t_pay:          float = Field(1.25,   ge=0.01, le=30.0)
+    long_tenor:     float = Field(10.0,   ge=0.25, le=30.0)
+    short_tenor:    float = Field(2.0,    ge=0.25, le=30.0)
+    spread_strike:  float = Field(0.005,  ge=-0.10, le=0.20, description="Spread strike (decimal)")
+    notional:       float = Field(10_000_000.0)
+    call_put:       Literal["call", "put"] = "call"
+    vol_long:       float = Field(0.30, gt=0.0, le=5.0)
+    vol_short:      float = Field(0.30, gt=0.0, le=5.0)
+    rho:            float = Field(0.7,  ge=-1.0, le=1.0, description="Correlation between CMS rates")
+    freq:           int   = Field(2, ge=1, le=4)
+    model:          Literal["linear_tsr", "replication"] = "linear_tsr"
+
+
 class SABRSmileRequest(BaseModel):
     forward_rate:     float = Field(0.0453, description="Forward swap rate (decimal)")
     expiry_years:     float = Field(1.0, ge=0.01, le=30.0, description="Option expiry in years")
@@ -983,6 +1027,141 @@ def attribution_steepener(req: AttributionSteepenerRequest):
                 "modified_duration": round(long_r.modified_duration, 4),
             },
         }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ── CMS pricing ───────────────────────────────────────────────────────────────
+
+@app.post("/cms/convexity", tags=["CMS"])
+def cms_convexity_endpoint(req: CMSConvexityRequest):
+    """
+    Compute the CMS convexity adjustment and CMS-adjusted rate.
+
+    Returns the forward swap rate, convexity adjustment (bps), and the
+    CMS rate (forward + adjustment) under Linear TSR or static replication.
+    """
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        result = cms_convexity_adj(
+            curve, req.expiry, req.swap_tenor, req.vol,
+            freq=req.freq, model=req.model,
+        )
+        return {
+            "forward_swap_rate_pct":  round(result.forward_swap_rate * 100, 5),
+            "convexity_adj_bps":      round(result.convexity_adj_bps, 4),
+            "cms_rate_pct":           round(result.cms_rate * 100, 5),
+            "expiry":                 req.expiry,
+            "swap_tenor":             req.swap_tenor,
+            "vol_pct":                round(req.vol * 100, 2),
+            "model":                  req.model,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/cms/caplet", tags=["CMS"])
+def cms_caplet_endpoint(req: CMSCapletRequest):
+    """
+    Price a CMS caplet or floorlet using the convexity-adjusted forward rate
+    with Black-76 model.
+
+    Returns PV, convexity-adjusted CMS rate, and the forward swap rate.
+    """
+    if req.t_pay <= req.t_fix:
+        raise HTTPException(status_code=422,
+                            detail="t_pay must be greater than t_fix")
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        caplet = _CMSCaplet(
+            t_fix=req.t_fix, t_pay=req.t_pay, swap_tenor=req.swap_tenor,
+            strike=req.strike, notional=req.notional, cap_floor=req.cap_floor,
+            freq=req.freq,
+        )
+        pv  = cms_caplet_pv(caplet, curve, req.vol, model=req.model)
+        res = cms_convexity_adj(curve, req.t_fix, req.swap_tenor, req.vol,
+                                freq=req.freq, model=req.model)
+        return {
+            "pv":                     round(pv, 2),
+            "cms_rate_pct":           round(res.cms_rate * 100, 5),
+            "forward_swap_rate_pct":  round(res.forward_swap_rate * 100, 5),
+            "convexity_adj_bps":      round(res.convexity_adj_bps, 4),
+            "strike_pct":             round(req.strike * 100, 4),
+            "cap_floor":              req.cap_floor,
+            "notional":               req.notional,
+            "model":                  req.model,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/cms/spread-option", tags=["CMS"])
+def cms_spread_option_endpoint(req: CMSSpreadRequest):
+    """
+    Price a CMS spread option (e.g. 10Y-2Y steepener call/put) using
+    Kirk's bivariate-normal approximation with CMS convexity adjustments.
+    """
+    if req.t_pay <= req.t_fix:
+        raise HTTPException(status_code=422,
+                            detail="t_pay must be greater than t_fix")
+    if req.long_tenor <= req.short_tenor:
+        raise HTTPException(status_code=422,
+                            detail="long_tenor must exceed short_tenor")
+    try:
+        curve  = _flat_curve(req.sofr_on)
+        option = _CMSSpreadOption(
+            t_fix=req.t_fix, t_pay=req.t_pay,
+            long_tenor=req.long_tenor, short_tenor=req.short_tenor,
+            spread_strike=req.spread_strike, notional=req.notional,
+            call_put=req.call_put, freq=req.freq,
+        )
+        pv = cms_spread_option_pv(
+            option, curve, req.vol_long, req.vol_short, req.rho,
+            model=req.model,
+        )
+        res_l = cms_convexity_adj(curve, req.t_fix, req.long_tenor,
+                                  req.vol_long, freq=req.freq, model=req.model)
+        res_s = cms_convexity_adj(curve, req.t_fix, req.short_tenor,
+                                  req.vol_short, freq=req.freq, model=req.model)
+        return {
+            "pv":                          round(pv, 2),
+            "cms_rate_long_pct":           round(res_l.cms_rate * 100, 5),
+            "cms_rate_short_pct":          round(res_s.cms_rate * 100, 5),
+            "cms_spread_pct":              round((res_l.cms_rate - res_s.cms_rate) * 100, 5),
+            "spread_strike_bps":           round(req.spread_strike * 10_000, 2),
+            "correlation":                 req.rho,
+            "call_put":                    req.call_put,
+            "notional":                    req.notional,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/cms/convexity-schedule", tags=["CMS"])
+def cms_convexity_schedule(
+    sofr_on: float = 0.0433,
+    swap_tenor: float = 10.0,
+    vol: float = 0.30,
+    model: str = "linear_tsr",
+):
+    """
+    Return the CMS convexity adjustment across a schedule of expiries (1M–10Y).
+    Useful for visualising how the adjustment grows with time to expiry.
+    """
+    try:
+        curve   = _flat_curve(sofr_on)
+        expiries = [1/12, 3/12, 6/12, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0]
+        m = model if model in ("linear_tsr", "replication") else "linear_tsr"
+        schedule = []
+        for T in expiries:
+            res = cms_convexity_adj(curve, T, swap_tenor, vol, model=m)
+            schedule.append({
+                "expiry_years":       round(T, 4),
+                "forward_swap_rate_pct": round(res.forward_swap_rate * 100, 5),
+                "convexity_adj_bps":  round(res.convexity_adj_bps, 4),
+                "cms_rate_pct":       round(res.cms_rate * 100, 5),
+            })
+        return {"schedule": schedule, "swap_tenor": swap_tenor, "model": m}
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 

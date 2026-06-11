@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 617 passing ✅")
+    st.markdown("**Tests:** 688 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -67,6 +67,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🔔 Caps & Floors",
     "🎲 Hull-White MC & VaR",
     "🏛️ Bermudan Swaption",
+    "📐 CMS Pricing",
 ])
 
 
@@ -1885,9 +1886,220 @@ with tab17:
             st.error(f"Bermudan error: {e}")
 
 
+# TAB 18: CMS Pricing
+# ─────────────────────────────────────────────────────────────────────────────
+with tab18:
+    st.header("CMS Pricing — Constant Maturity Swap")
+    st.markdown(
+        "**CMS (Constant Maturity Swap)** instruments pay a floating rate tied to a long-tenor "
+        "swap rate (e.g. the 10-year swap rate) rather than an overnight or 3-month rate. "
+        "Because a receiver of CMS is long the convexity of the yield curve, the CMS rate must "
+        "be adjusted upward relative to the forward swap rate — the **convexity adjustment**.\n\n"
+        "- **Linear TSR** (Terminal Swap Rate): closed-form Hagan (2003) adjustment\n"
+        "- **CMS Caplet/Floorlet**: Black-76 with convexity-adjusted forward\n"
+        "- **CMS Spread Option**: Kirk's bivariate-normal approximation (steepener/flattener)\n"
+    )
+
+    from sofr_engine.cms import (
+        cms_convexity_adj as _cms_adj,
+        CMSCaplet as _CMSCapletDash,
+        cms_caplet_pv as _cms_cap_pv,
+        CMSSpreadOption as _CMSSpreadDash,
+        cms_spread_option_pv as _cms_spr_pv,
+    )
+    from sofr_engine.bootstrap import flat_sofr_curve as _cms_flat
+
+    cms_sub = st.radio("Section", ["Convexity Schedule", "CMS Caplet/Floorlet", "Spread Option"],
+                       horizontal=True, key="cms_sub")
+
+    # ── Convexity Schedule ──────────────────────────────────────────────────
+    if cms_sub == "Convexity Schedule":
+        st.subheader("CMS Convexity Adjustment Schedule")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            cms_sofr    = st.number_input("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="cms_sofr") / 100
+        with col_c2:
+            cms_tenor   = st.number_input("CMS swap tenor (y)", 1.0, 30.0, 10.0, 1.0, key="cms_tenor")
+        with col_c3:
+            cms_vol     = st.slider("Swaption vol (%)", 5, 80, 30, 1, key="cms_vol") / 100
+        cms_model = st.radio("Model", ["linear_tsr", "replication"], horizontal=True, key="cms_model")
+
+        try:
+            import matplotlib.pyplot as _cplt
+            import pandas as _cpd
+
+            _cms_crv  = _cms_flat(__import__("datetime").date.today(), cms_sofr)
+            expiries  = [1/12, 3/12, 6/12, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0]
+            rows = []
+            for T in expiries:
+                r = _cms_adj(_cms_crv, T, cms_tenor, cms_vol, model=cms_model)
+                rows.append({
+                    "Expiry (y)": round(T, 4),
+                    "Forward Swap Rate (%)": round(r.forward_swap_rate * 100, 4),
+                    "Conv. Adj. (bps)": round(r.convexity_adj_bps, 3),
+                    "CMS Rate (%)": round(r.cms_rate * 100, 4),
+                })
+            df_sched = _cpd.DataFrame(rows)
+            st.dataframe(df_sched, use_container_width=True, hide_index=True)
+
+            fig_c, ax_c = _cplt.subplots(figsize=(9, 4))
+            ax_c.bar(df_sched["Expiry (y)"].astype(str), df_sched["Conv. Adj. (bps)"],
+                     color="royalblue", alpha=0.85, edgecolor="white")
+            ax_c.set_xlabel("Expiry (years)")
+            ax_c.set_ylabel("Convexity Adjustment (bps)")
+            ax_c.set_title(f"CMS {cms_tenor:.0f}Y Convexity Adjustment — {cms_model.upper().replace('_', ' ')} Model")
+            ax_c.spines["top"].set_visible(False)
+            ax_c.spines["right"].set_visible(False)
+            st.pyplot(fig_c, use_container_width=True)
+            _cplt.close()
+
+            n0 = rows[0]["Conv. Adj. (bps)"]
+            n_last = rows[-1]["Conv. Adj. (bps)"]
+            st.caption(
+                f"CMS {cms_tenor:.0f}Y convexity adj grows from {n0:.1f}bps (1M expiry) "
+                f"to {n_last:.1f}bps (10Y expiry) at vol={cms_vol*100:.0f}%"
+            )
+        except Exception as e:
+            st.error(f"CMS convexity error: {e}")
+
+    # ── CMS Caplet / Floorlet ───────────────────────────────────────────────
+    elif cms_sub == "CMS Caplet/Floorlet":
+        st.subheader("CMS Caplet / Floorlet Pricing")
+        col_c4, col_c5, col_c6 = st.columns(3)
+        with col_c4:
+            cl_sofr   = st.number_input("SOFR (%)", 1.0, 8.0, 4.33, 0.01, key="cl_sofr") / 100
+            cl_t_fix  = st.number_input("Fixing date (y)", 0.25, 10.0, 1.0, 0.25, key="cl_tfix")
+            cl_t_pay  = st.number_input("Payment date (y)", 0.25, 10.5, 1.25, 0.25, key="cl_tpay")
+        with col_c5:
+            cl_tenor  = st.number_input("CMS swap tenor (y)", 1.0, 30.0, 10.0, 1.0, key="cl_tenor")
+            cl_vol    = st.slider("Swaption vol (%)", 5, 80, 30, 1, key="cl_vol") / 100
+            cl_model  = st.radio("Model", ["linear_tsr", "replication"], horizontal=True, key="cl_model")
+        with col_c6:
+            cl_strike_pct = st.number_input("Strike (%)", 0.5, 15.0, 4.33, 0.05, key="cl_k")
+            cl_notional   = st.number_input("Notional ($M)", 0.1, 100.0, 10.0, 0.5, key="cl_not") * 1e6
+            cl_cf         = st.radio("Cap / Floor", ["cap", "floor"], horizontal=True, key="cl_cf")
+
+        try:
+            _cl_crv = _cms_flat(__import__("datetime").date.today(), cl_sofr)
+            cl_caplet = _CMSCapletDash(
+                t_fix=float(cl_t_fix), t_pay=float(cl_t_pay), swap_tenor=float(cl_tenor),
+                strike=cl_strike_pct / 100, notional=cl_notional, cap_floor=cl_cf,
+            )
+            cl_pv = _cms_cap_pv(cl_caplet, _cl_crv, cl_vol, model=cl_model)
+            cl_res = _cms_adj(_cl_crv, cl_t_fix, cl_tenor, cl_vol, model=cl_model)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("CMS Caplet PV", f"${cl_pv:,.0f}")
+            c2.metric("CMS Rate", f"{cl_res.cms_rate * 100:.4f}%")
+            c3.metric("Fwd Swap Rate", f"{cl_res.forward_swap_rate * 100:.4f}%")
+            c4.metric("Conv. Adj.", f"{cl_res.convexity_adj_bps:.2f} bps")
+
+            # Strike sensitivity
+            import numpy as np
+            import matplotlib.pyplot as _cl_plt
+
+            strikes_pct = np.linspace(max(0.5, cl_strike_pct - 2), cl_strike_pct + 2, 60)
+            pvs = []
+            for K in strikes_pct:
+                cl_tmp = _CMSCapletDash(t_fix=float(cl_t_fix), t_pay=float(cl_t_pay),
+                                        swap_tenor=float(cl_tenor), strike=K / 100,
+                                        notional=cl_notional, cap_floor=cl_cf)
+                pvs.append(_cms_cap_pv(cl_tmp, _cl_crv, cl_vol, model=cl_model))
+
+            fig_cl, ax_cl = _cl_plt.subplots(figsize=(9, 4))
+            ax_cl.plot(strikes_pct, pvs, color="steelblue", linewidth=2)
+            ax_cl.axvline(cl_strike_pct, color="red", linestyle="--", alpha=0.7, label=f"Strike={cl_strike_pct:.2f}%")
+            ax_cl.axvline(cl_res.cms_rate * 100, color="green", linestyle="--", alpha=0.7,
+                          label=f"CMS Rate={cl_res.cms_rate * 100:.3f}%")
+            ax_cl.set_xlabel("Strike (%)")
+            ax_cl.set_ylabel("PV ($)")
+            ax_cl.set_title(f"CMS {cl_cf.capitalize()} PV vs Strike | {cl_tenor:.0f}Y CMS, T={cl_t_fix:.2f}Y")
+            ax_cl.legend()
+            ax_cl.spines["top"].set_visible(False)
+            ax_cl.spines["right"].set_visible(False)
+            st.pyplot(fig_cl, use_container_width=True)
+            _cl_plt.close()
+
+        except Exception as e:
+            st.error(f"CMS caplet error: {e}")
+
+    # ── CMS Spread Option ───────────────────────────────────────────────────
+    else:
+        st.subheader("CMS Spread Option — Steepener / Flattener")
+        st.markdown(
+            "A **steepener call** profits when the yield curve steepens "
+            "(10Y−2Y spread widens above the strike). A **flattener put** profits "
+            "when the curve flattens. Priced via Kirk's (1995) bivariate-normal approximation."
+        )
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            spr_sofr   = st.number_input("SOFR (%)", 1.0, 8.0, 4.33, 0.01, key="spr_sofr") / 100
+            spr_t_fix  = st.number_input("Expiry (y)", 0.25, 10.0, 1.0, 0.25, key="spr_tfx")
+            spr_t_pay  = st.number_input("Payment (y)", 0.25, 10.5, 1.25, 0.25, key="spr_tpy")
+        with col_s2:
+            spr_l_ten  = st.number_input("Long tenor (y)", 2.0, 30.0, 10.0, 1.0, key="spr_lt")
+            spr_s_ten  = st.number_input("Short tenor (y)", 1.0, 15.0, 2.0, 1.0, key="spr_st")
+            spr_k_bps  = st.number_input("Strike (bps)", -100, 300, 50, 5, key="spr_k")
+        with col_s3:
+            spr_vl     = st.slider("Vol Long (%)", 5, 80, 30, 1, key="spr_vl") / 100
+            spr_vs     = st.slider("Vol Short (%)", 5, 80, 30, 1, key="spr_vs") / 100
+            spr_rho    = st.slider("Correlation ρ", -0.99, 0.99, 0.70, 0.01, key="spr_rho")
+            spr_not    = st.number_input("Notional ($M)", 0.1, 500.0, 10.0, 1.0, key="spr_not") * 1e6
+            spr_cp     = st.radio("Call / Put", ["call", "put"], horizontal=True, key="spr_cp")
+
+        try:
+            _spr_crv = _cms_flat(__import__("datetime").date.today(), spr_sofr)
+            spr_opt = _CMSSpreadDash(
+                t_fix=float(spr_t_fix), t_pay=float(spr_t_pay),
+                long_tenor=float(spr_l_ten), short_tenor=float(spr_s_ten),
+                spread_strike=spr_k_bps / 10_000, notional=spr_not, call_put=spr_cp,
+            )
+            spr_pv = _cms_spr_pv(spr_opt, _spr_crv, spr_vl, spr_vs, spr_rho)
+            spr_rl = _cms_adj(_spr_crv, spr_t_fix, spr_l_ten, spr_vl)
+            spr_rs = _cms_adj(_spr_crv, spr_t_fix, spr_s_ten, spr_vs)
+
+            cv1, cv2, cv3, cv4 = st.columns(4)
+            cv1.metric("Spread Option PV", f"${spr_pv:,.0f}")
+            cv2.metric(f"CMS {spr_l_ten:.0f}Y", f"{spr_rl.cms_rate * 100:.4f}%",
+                       delta=f"+{spr_rl.convexity_adj_bps:.2f} bps conv adj")
+            cv3.metric(f"CMS {spr_s_ten:.0f}Y", f"{spr_rs.cms_rate * 100:.4f}%",
+                       delta=f"+{spr_rs.convexity_adj_bps:.2f} bps conv adj")
+            cv4.metric("CMS Spread", f"{(spr_rl.cms_rate - spr_rs.cms_rate) * 10000:.1f} bps")
+
+            # Rho sensitivity
+            import numpy as np
+            import matplotlib.pyplot as _spl
+
+            rhos     = np.linspace(-0.95, 0.95, 50)
+            pv_rhos  = []
+            for r in rhos:
+                pv_rhos.append(_cms_spr_pv(spr_opt, _spr_crv, spr_vl, spr_vs, float(r)))
+
+            fig_spr, ax_spr = _spl.subplots(figsize=(9, 4))
+            ax_spr.plot(rhos, [v / 1000 for v in pv_rhos], color="darkorange", linewidth=2)
+            ax_spr.axvline(spr_rho, color="red", linestyle="--", alpha=0.7,
+                           label=f"ρ={spr_rho:.2f}")
+            ax_spr.set_xlabel("Correlation ρ")
+            ax_spr.set_ylabel("Option PV ($K)")
+            title_type = "Steepener Call" if spr_cp == "call" else "Flattener Put"
+            ax_spr.set_title(f"CMS Spread Option PV vs Correlation | {title_type} {spr_l_ten:.0f}Y−{spr_s_ten:.0f}Y")
+            ax_spr.legend()
+            ax_spr.spines["top"].set_visible(False)
+            ax_spr.spines["right"].set_visible(False)
+            st.pyplot(fig_spr, use_container_width=True)
+            _spl.close()
+
+            st.caption(
+                f"Kirk's approximation | Correlation={spr_rho:.2f} | "
+                f"Strike={spr_k_bps}bps | Notional=${spr_not/1e6:.0f}M"
+            )
+        except Exception as e:
+            st.error(f"CMS spread option error: {e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 617 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 688 tests ✅ | Sharpe 0.282 OOS"
 )
