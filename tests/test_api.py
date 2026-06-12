@@ -1055,3 +1055,121 @@ class TestCDSEndpoints:
             "spreads": [0.01],
         })
         assert r.status_code == 422
+
+
+# ── LMM endpoints ─────────────────────────────────────────────────────────────
+
+_LMM_CAP_BASE = {
+    "sofr_on": 0.0433,
+    "tenor_years": 5.0,
+    "n_periods": 10,
+    "flat_vol": 0.25,
+    "strike": 0.04,
+    "notional": 1_000_000,
+    "corr_decay": 0.10,
+    "is_cap": True,
+}
+
+_LMM_SW_BASE = {
+    "sofr_on": 0.0433,
+    "tenor_years": 5.0,
+    "n_periods": 10,
+    "flat_vol": 0.25,
+    "expiry_period": 2,
+    "swap_end_period": 8,
+    "strike": -1.0,
+    "notional": 1_000_000,
+    "corr_decay": 0.10,
+    "is_payer": True,
+    "n_paths": 1_000,
+    "n_steps": 20,
+    "seed": 42,
+}
+
+
+class TestLMMEndpoints:
+    def test_cap_200(self):
+        r = client.post("/lmm/cap", json=_LMM_CAP_BASE)
+        assert r.status_code == 200
+
+    def test_cap_keys(self):
+        body = client.post("/lmm/cap", json=_LMM_CAP_BASE).json()
+        for k in ["total_pv", "implied_flat_vol", "caplets", "n_periods"]:
+            assert k in body
+
+    def test_cap_pv_positive(self):
+        body = client.post("/lmm/cap", json=_LMM_CAP_BASE).json()
+        assert body["total_pv"] > 0
+
+    def test_cap_n_caplets_matches(self):
+        body = client.post("/lmm/cap", json=_LMM_CAP_BASE).json()
+        assert len(body["caplets"]) == _LMM_CAP_BASE["n_periods"]
+
+    def test_floor_positive(self):
+        body = client.post("/lmm/cap", json={**_LMM_CAP_BASE, "is_cap": False}).json()
+        assert body["total_pv"] > 0
+
+    def test_implied_vol_round_trip(self):
+        body = client.post("/lmm/cap", json=_LMM_CAP_BASE).json()
+        assert abs(body["implied_flat_vol"] - _LMM_CAP_BASE["flat_vol"]) < 1e-4
+
+    def test_swaption_200(self):
+        r = client.post("/lmm/swaption", json=_LMM_SW_BASE)
+        assert r.status_code == 200
+
+    def test_swaption_keys(self):
+        body = client.post("/lmm/swaption", json=_LMM_SW_BASE).json()
+        for k in ["pv", "std_err", "rebonato_vol_pct", "swap_rate_mean_pct"]:
+            assert k in body
+
+    def test_swaption_pv_positive_itm(self):
+        body = client.post("/lmm/swaption", json={**_LMM_SW_BASE, "strike": 0.001}).json()
+        assert body["pv"] > 0
+
+    def test_swaption_atm_strike(self):
+        body = client.post("/lmm/swaption", json={**_LMM_SW_BASE, "strike": -1.0}).json()
+        assert body["pv"] > 0
+
+    def test_rebonato_vol_positive(self):
+        body = client.post("/lmm/swaption", json=_LMM_SW_BASE).json()
+        assert body["rebonato_vol_pct"] > 0
+
+    def test_calibrate_200(self):
+        r = client.post("/lmm/calibrate-caplet-vols", json={
+            "sofr_on": 0.0433,
+            "tenor_years": 5.0,
+            "n_periods": 10,
+            "cap_flat_vols": [0.25] * 10,
+            "corr_decay": 0.10,
+        })
+        assert r.status_code == 200
+
+    def test_calibrate_keys(self):
+        body = client.post("/lmm/calibrate-caplet-vols", json={
+            "sofr_on": 0.0433,
+            "tenor_years": 5.0,
+            "n_periods": 5,
+            "cap_flat_vols": [0.25, 0.26, 0.27, 0.28, 0.29],
+            "corr_decay": 0.10,
+        }).json()
+        for k in ["calibrated_vols_pct", "input_cap_vols_pct", "initial_forwards_pct"]:
+            assert k in body
+
+    def test_rebonato_surface_200(self):
+        r = client.get("/lmm/rebonato-surface", params={
+            "sofr_on": 0.0433, "tenor_years": 3.0,
+            "n_periods": 6, "flat_vol": 0.25, "corr_decay": 0.1,
+        })
+        assert r.status_code == 200
+
+    def test_rebonato_surface_has_entries(self):
+        body = client.get("/lmm/rebonado-surface", params={
+            "sofr_on": 0.0433, "tenor_years": 3.0,
+            "n_periods": 6, "flat_vol": 0.25, "corr_decay": 0.1,
+        })
+        # Route name check: use the correct URL
+        r = client.get("/lmm/rebonato-surface", params={
+            "sofr_on": 0.0433, "tenor_years": 3.0,
+            "n_periods": 6, "flat_vol": 0.25, "corr_decay": 0.1,
+        })
+        assert r.json()["n_entries"] > 0

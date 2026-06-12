@@ -86,6 +86,18 @@ from sofr_engine.cms import (
     CMSSwap as _CMSSwap,
     cms_convexity_adj, cms_caplet_pv, cms_floorlet_pv, cms_spread_option_pv,
 )
+from sofr_engine.lmm import (
+    LMMParams as _LMMParams,
+    initial_forwards as _lmm_fwds,
+    simulate_lmm as _sim_lmm,
+    caplet_black76 as _caplet_b76,
+    cap_black76 as _cap_b76,
+    cap_implied_vol as _cap_iv,
+    swaption_lmm_mc as _sw_lmm_mc,
+    rebonato_swaption_vol as _rebonato,
+    calibrate_caplet_vols as _cal_cap_vols,
+    calibrate_corr_decay as _cal_corr,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -1350,6 +1362,212 @@ def cms_convexity_schedule(
                 "cms_rate_pct":       round(res.cms_rate * 100, 5),
             })
         return {"schedule": schedule, "swap_tenor": swap_tenor, "model": m}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ── LMM Pydantic models ────────────────────────────────────────────────────────
+
+class LMMCapRequest(BaseModel):
+    sofr_on      : float = Field(0.0433, description="Overnight SOFR rate")
+    tenor_years  : float = Field(5.0,   ge=0.5, description="Cap maturity in years")
+    n_periods    : int   = Field(10,    ge=1,   description="Number of caplet periods")
+    flat_vol     : float = Field(0.25,  gt=0,   description="Flat Black vol")
+    strike       : float = Field(0.04,  ge=0,   description="Cap strike rate")
+    notional     : float = Field(1_000_000.0, gt=0)
+    corr_decay   : float = Field(0.10,  ge=0,   description="Exponential correlation decay λ")
+    is_cap       : bool  = Field(True,  description="True=cap, False=floor")
+
+
+class LMMSwaptionRequest(BaseModel):
+    sofr_on      : float = Field(0.0433)
+    tenor_years  : float = Field(5.0,  ge=0.5, description="Total tenor span in years")
+    n_periods    : int   = Field(10,   ge=2,   description="Number of forward rate periods")
+    flat_vol     : float = Field(0.25, gt=0)
+    expiry_period: int   = Field(4,    ge=0,   description="Swaption expiry (period index k_start)")
+    swap_end_period: int = Field(10,   ge=1,   description="Swap end period index k_end")
+    strike       : float = Field(-1.0, description="Strike rate; -1 = ATM")
+    notional     : float = Field(1_000_000.0, gt=0)
+    corr_decay   : float = Field(0.10, ge=0)
+    is_payer     : bool  = Field(True)
+    n_paths      : int   = Field(2_000, ge=100)
+    n_steps      : int   = Field(50,    ge=10)
+    seed         : int   = Field(42)
+
+
+class LMMCalibrateRequest(BaseModel):
+    sofr_on      : float = Field(0.0433)
+    tenor_years  : float = Field(5.0, ge=0.5)
+    n_periods    : int   = Field(10,  ge=2)
+    cap_flat_vols: list[float] = Field(
+        default=[0.25] * 10,
+        description="Flat ATM cap implied vol for each successive cap (length = n_periods)"
+    )
+    corr_decay   : float = Field(0.10, ge=0)
+
+
+def _build_lmm_params(
+    sofr_on: float,
+    tenor_years: float,
+    n_periods: int,
+    flat_vol: float,
+    corr_decay: float,
+):
+    dt     = tenor_years / n_periods
+    tenors = np.linspace(0.0, tenor_years, n_periods + 1)
+    vols   = np.full(n_periods, flat_vol)
+    curve  = _flat_curve(sofr_on)
+    params = _LMMParams(tenors=tenors, vols=vols, corr_decay=corr_decay)
+    return curve, params
+
+
+# ── LMM endpoints ──────────────────────────────────────────────────────────────
+
+@app.post("/lmm/cap", tags=["LMM"])
+def lmm_cap_endpoint(req: LMMCapRequest):
+    """
+    Black-76 cap or floor price from the LMM.
+    Returns per-caplet breakdown and total cap PV.
+    """
+    try:
+        curve, params = _build_lmm_params(
+            req.sofr_on, req.tenor_years, req.n_periods,
+            req.flat_vol, req.corr_decay,
+        )
+        F0 = _lmm_fwds(curve, params.tenors)
+        K  = req.strike
+
+        total_pv = _cap_b76(curve, params, K, req.notional, req.is_cap)
+        caplets  = [
+            {
+                "period"    : k,
+                "T_fix"     : round(float(params.tenors[k]), 4),
+                "T_pay"     : round(float(params.tenors[k + 1]), 4),
+                "forward_pct": round(float(F0[k]) * 100, 5),
+                "pv"        : round(_caplet_b76(curve, params, k, K, req.notional, req.is_cap), 2),
+            }
+            for k in range(params.N)
+        ]
+
+        iv = _cap_iv(curve, params, K, total_pv, req.notional, req.is_cap)
+
+        return {
+            "total_pv"          : round(total_pv, 2),
+            "implied_flat_vol"  : round(iv, 6),
+            "strike"            : K,
+            "notional"          : req.notional,
+            "is_cap"            : req.is_cap,
+            "n_periods"         : params.N,
+            "caplets"           : caplets,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/lmm/swaption", tags=["LMM"])
+def lmm_swaption_endpoint(req: LMMSwaptionRequest):
+    """
+    European swaption priced via LMM Monte Carlo under Q^{T_N}.
+    Also returns the Rebonato approximate implied vol.
+    """
+    if req.expiry_period >= req.swap_end_period:
+        raise HTTPException(422, "expiry_period must be < swap_end_period")
+    if req.swap_end_period > req.n_periods:
+        raise HTTPException(422, "swap_end_period must be ≤ n_periods")
+
+    try:
+        curve, params = _build_lmm_params(
+            req.sofr_on, req.tenor_years, req.n_periods,
+            req.flat_vol, req.corr_decay,
+        )
+        k_s = req.expiry_period
+        k_e = req.swap_end_period
+
+        # Compute ATM strike if requested
+        if req.strike < 0:
+            F0  = _lmm_fwds(curve, params.tenors)
+            alp = params.alpha
+            P, A = 1.0, 0.0
+            for i in range(k_s, k_e):
+                P = P / (1.0 + alp[i] * F0[i])
+                A += alp[i] * P
+            K = float((1.0 - P) / max(A, 1e-15))
+        else:
+            K = req.strike
+
+        sim = _sim_lmm(curve, params, n_steps=req.n_steps, n_paths=req.n_paths, seed=req.seed)
+        res = _sw_lmm_mc(sim, curve, k_s, k_e, K, req.notional, req.is_payer)
+        rebonato_vol = _rebonato(curve, params, k_s, k_e)
+
+        return {
+            "pv"               : round(res["pv"], 2),
+            "std_err"          : round(res["std_err"], 2),
+            "strike"           : round(K, 6),
+            "is_payer"         : req.is_payer,
+            "swap_rate_mean_pct": round(res["swap_rate_mean"] * 100, 5),
+            "annuity_mean"     : round(res["annuity_mean"], 6),
+            "rebonato_vol_pct" : round(rebonato_vol * 100, 4),
+            "n_paths"          : req.n_paths,
+            "notional"         : req.notional,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/lmm/calibrate-caplet-vols", tags=["LMM"])
+def lmm_calibrate_vols_endpoint(req: LMMCalibrateRequest):
+    """
+    Bootstrap caplet vols from flat ATM cap implied vols.
+    Returns calibrated per-period caplet vols and initial forward rates.
+    """
+    if len(req.cap_flat_vols) != req.n_periods:
+        raise HTTPException(422,
+            f"cap_flat_vols length {len(req.cap_flat_vols)} ≠ n_periods {req.n_periods}")
+    try:
+        tenors  = np.linspace(0.0, req.tenor_years, req.n_periods + 1)
+        vols    = np.full(req.n_periods, req.cap_flat_vols[0])
+        curve   = _flat_curve(req.sofr_on)
+        p_tmpl  = _LMMParams(tenors=tenors, vols=vols, corr_decay=req.corr_decay)
+        p_cal   = _cal_cap_vols(curve, p_tmpl, req.cap_flat_vols)
+        F0      = _lmm_fwds(curve, tenors)
+
+        return {
+            "calibrated_vols_pct": [round(v * 100, 4) for v in p_cal.vols.tolist()],
+            "input_cap_vols_pct" : [round(v * 100, 4) for v in req.cap_flat_vols],
+            "initial_forwards_pct": [round(float(f) * 100, 5) for f in F0.tolist()],
+            "tenors"             : [round(t, 4) for t in tenors.tolist()],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/lmm/rebonato-surface", tags=["LMM"])
+def lmm_rebonato_surface(
+    sofr_on    : float = 0.0433,
+    tenor_years: float = 5.0,
+    n_periods  : int   = 10,
+    flat_vol   : float = 0.25,
+    corr_decay : float = 0.10,
+):
+    """
+    Compute the Rebonato approximate swaption vol surface across
+    all expiry × swap-length combinations.
+    """
+    try:
+        curve, params = _build_lmm_params(sofr_on, tenor_years, n_periods, flat_vol, corr_decay)
+        N = params.N
+        surface = []
+        for k_s in range(N - 1):
+            for k_e in range(k_s + 2, N + 1):
+                vol = _rebonato(curve, params, k_s, k_e)
+                surface.append({
+                    "expiry_years" : round(float(params.tenors[k_s]), 4),
+                    "swap_tenor_yrs": round(float(params.tenors[k_e] - params.tenors[k_s]), 4),
+                    "k_start"      : k_s,
+                    "k_end"        : k_e,
+                    "rebonato_vol_pct": round(vol * 100, 4),
+                })
+        return {"surface": surface, "n_entries": len(surface), "n_periods": N}
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 

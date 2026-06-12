@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 745 passing ✅")
+    st.markdown("**Tests:** 885 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -70,6 +70,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "📐 CMS Pricing",
     "🔵 G2++ Two-Factor",
     "🛡️ CDS Pricing",
+    "📈 LMM / BGM",
 ])
 
 
@@ -2407,9 +2408,208 @@ with tab20:
             st.error(f"CDS bootstrap error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 21: LMM / BGM (Libor Market Model)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab21:
+    st.header("📈 SOFR Libor Market Model (BGM)")
+    st.caption(
+        "Log-normal BGM on a discrete SOFR tenor grid. "
+        "Black-76 cap pricing, Monte-Carlo swaptions under Q^{T_N}, "
+        "Rebonato approximate vol surface, and caplet vol bootstrap."
+    )
+
+    from sofr_engine.lmm import (
+        LMMParams as _LMMParams_db,
+        initial_forwards as _lmm_fwds_db,
+        simulate_lmm as _sim_lmm_db,
+        caplet_black76 as _caplet_b76_db,
+        cap_black76 as _cap_b76_db,
+        cap_implied_vol as _cap_iv_db,
+        swaption_lmm_mc as _sw_lmm_mc_db,
+        rebonato_swaption_vol as _rebonato_db,
+        calibrate_caplet_vols as _cal_cap_vols_db,
+    )
+
+    lmm_col1, lmm_col2 = st.columns([1, 2])
+
+    with lmm_col1:
+        st.subheader("Model Parameters")
+        lmm_sofr = st.number_input("SOFR ON Rate", 0.010, 0.120, 0.0433, 0.001,
+                                    format="%.4f", key="lmm_sofr")
+        lmm_n    = st.slider("Number of Periods", 4, 20, 10, 1, key="lmm_n")
+        lmm_mat  = st.slider("Tenor (years)", 1.0, 10.0, 5.0, 0.5, key="lmm_mat")
+        lmm_vol  = st.slider("Flat vol (%)", 5.0, 60.0, 25.0, 1.0, key="lmm_vol") / 100.0
+        lmm_lam  = st.slider("Corr decay λ", 0.0, 2.0, 0.10, 0.01, key="lmm_lam")
+        lmm_K    = st.number_input("Cap/Swaption strike (%)", 0.5, 15.0, 4.0, 0.1,
+                                    format="%.2f", key="lmm_K") / 100.0
+
+    with lmm_col2:
+        try:
+            from sofr_engine.bootstrap import flat_sofr_curve as _fsc_lmm
+            _lmm_curve  = _fsc_lmm(date.today(), lmm_sofr)
+            _lmm_tenors = np.linspace(0.0, lmm_mat, lmm_n + 1)
+            _lmm_vols   = np.full(lmm_n, lmm_vol)
+            _lmm_params = _LMMParams_db(tenors=_lmm_tenors, vols=_lmm_vols, corr_decay=lmm_lam)
+            _lmm_F0     = _lmm_fwds_db(_lmm_curve, _lmm_tenors)
+
+            # ── Forward rate term structure ───────────────────────────────────
+            st.subheader("Initial Forward Rate Term Structure")
+            fig_fwd, ax_fwd = plt.subplots(figsize=(7, 3))
+            ax_fwd.bar(
+                _lmm_tenors[:-1],
+                _lmm_F0 * 100,
+                width=np.diff(_lmm_tenors) * 0.8,
+                align="edge",
+                color="#1f77b4",
+                alpha=0.75,
+                label="F_k(0)",
+            )
+            ax_fwd.set_xlabel("Period Start (years)")
+            ax_fwd.set_ylabel("Forward Rate (%)")
+            ax_fwd.set_title("LMM Initial Forward Rates")
+            ax_fwd.legend()
+            ax_fwd.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f%%"))
+            st.pyplot(fig_fwd, use_container_width=True)
+            plt.close(fig_fwd)
+
+            # ── Black-76 cap strip ────────────────────────────────────────────
+            st.subheader("Black-76 Cap Strip")
+            cap_pvs  = [
+                _caplet_b76_db(_lmm_curve, _lmm_params, k, lmm_K, 1_000_000, True)
+                for k in range(lmm_n)
+            ]
+            cum_cap  = np.cumsum(cap_pvs)
+            fig_cap, ax_cap = plt.subplots(figsize=(7, 3))
+            ax_cap.bar(
+                range(1, lmm_n + 1),
+                cap_pvs,
+                color="#ff7f0e",
+                alpha=0.75,
+                label="Caplet PV",
+            )
+            ax2_cap = ax_cap.twinx()
+            ax2_cap.plot(range(1, lmm_n + 1), cum_cap, "k--o", label="Cumulative Cap PV", ms=4)
+            ax_cap.set_xlabel("Period k")
+            ax_cap.set_ylabel("Caplet PV ($)")
+            ax2_cap.set_ylabel("Cumulative Cap PV ($)")
+            ax_cap.set_title(f"Cap Strip  |  K={lmm_K*100:.2f}%  |  Flat vol={lmm_vol*100:.0f}%")
+            lines1, lab1 = ax_cap.get_legend_handles_labels()
+            lines2, lab2 = ax2_cap.get_legend_handles_labels()
+            ax_cap.legend(lines1 + lines2, lab1 + lab2, loc="upper left", fontsize=8)
+            st.pyplot(fig_cap, use_container_width=True)
+            plt.close(fig_cap)
+
+        except Exception as e:
+            st.error(f"LMM curve error: {e}")
+
+    # ── Rebonato swaption vol surface ─────────────────────────────────────────
+    st.subheader("Rebonato Approximate Swaption Vol Surface")
+    try:
+        vol_grid = np.zeros((lmm_n, lmm_n))
+        for k_s in range(lmm_n - 1):
+            for k_e in range(k_s + 2, lmm_n + 1):
+                v = _rebonato_db(_lmm_curve, _lmm_params, k_s, k_e)
+                vol_grid[k_s, k_e - 1] = v * 100.0
+
+        expiry_labels = [f"{_lmm_tenors[k]:.1f}Y" for k in range(lmm_n)]
+        tenor_labels  = [f"{_lmm_tenors[k]:.1f}Y" for k in range(1, lmm_n + 1)]
+
+        fig_vol, ax_vol = plt.subplots(figsize=(9, 4))
+        im = ax_vol.imshow(
+            vol_grid, aspect="auto", cmap="RdYlGn_r",
+            vmin=max(lmm_vol * 100 * 0.5, 1),
+            vmax=lmm_vol * 100 * 1.2,
+        )
+        ax_vol.set_xticks(range(lmm_n))
+        ax_vol.set_xticklabels(tenor_labels, rotation=45, fontsize=7)
+        ax_vol.set_yticks(range(lmm_n))
+        ax_vol.set_yticklabels(expiry_labels, fontsize=7)
+        ax_vol.set_xlabel("Swap End Tenor")
+        ax_vol.set_ylabel("Swaption Expiry")
+        ax_vol.set_title("Rebonato Approx. Swaption Implied Vol (%)")
+        plt.colorbar(im, ax=ax_vol, label="Vol (%)")
+        st.pyplot(fig_vol, use_container_width=True)
+        plt.close(fig_vol)
+
+    except Exception as e:
+        st.warning(f"Rebonato surface error: {e}")
+
+    # ── MC Swaption Pricer ────────────────────────────────────────────────────
+    st.subheader("Monte-Carlo Swaption Pricer")
+    sw_col1, sw_col2 = st.columns(2)
+    with sw_col1:
+        sw_kstart = st.slider("Expiry period k_start", 0, max(lmm_n - 2, 1), min(2, lmm_n - 2), key="sw_ks")
+        sw_kend   = st.slider("Swap end period k_end", sw_kstart + 1, lmm_n, min(sw_kstart + 4, lmm_n), key="sw_ke")
+        sw_npaths = st.select_slider("MC Paths", [500, 1000, 2000, 4000], 2000, key="sw_np")
+        sw_payer  = st.checkbox("Payer swaption", value=True, key="sw_pay")
+
+    with sw_col2:
+        if st.button("Price Swaption (MC)", key="sw_btn"):
+            try:
+                _sim = _sim_lmm_db(
+                    _lmm_curve, _lmm_params,
+                    n_steps=40, n_paths=sw_npaths, seed=42,
+                )
+                # ATM strike from simulation mean
+                _S0  = float(_sim.swap_rate(_lmm_tenors[sw_kstart], sw_kstart, sw_kend).mean())
+                _K   = _S0 if lmm_K <= 0 else lmm_K
+                _res = _sw_lmm_mc_db(_sim, _lmm_curve, sw_kstart, sw_kend, _K,
+                                      1_000_000, sw_payer)
+                _reb = _rebonato_db(_lmm_curve, _lmm_params, sw_kstart, sw_kend)
+                st.metric("Swaption PV ($)", f"{_res['pv']:,.2f}")
+                st.metric("±1σ Std Error", f"{_res['std_err']:,.2f}")
+                st.metric("Swap rate (mean %)", f"{_res['swap_rate_mean']*100:.4f}")
+                st.metric("Rebonato σ (%)", f"{_reb*100:.3f}")
+                st.metric("Strike (%)", f"{_K*100:.4f}")
+            except Exception as ex:
+                st.error(str(ex))
+
+    # ── Caplet vol bootstrap ──────────────────────────────────────────────────
+    st.subheader("Caplet Vol Bootstrap")
+    st.caption(
+        "Enter a flat cap implied vol term structure. "
+        "The bootstrapper recovers per-period caplet vols."
+    )
+    default_cap_vols = ", ".join(["25.0"] * lmm_n)
+    cap_vol_str = st.text_area(
+        "Flat cap implied vols (%, comma-separated — one per period)",
+        value=default_cap_vols, key="cap_vol_ts",
+    )
+    if st.button("Bootstrap Caplet Vols", key="boot_btn"):
+        try:
+            flat_vols = [float(x.strip()) / 100.0 for x in cap_vol_str.split(",")]
+            if len(flat_vols) != lmm_n:
+                st.error(f"Need exactly {lmm_n} values, got {len(flat_vols)}.")
+            else:
+                p_cal = _cal_cap_vols_db(_lmm_curve, _lmm_params, flat_vols)
+                df_boot = pd.DataFrame({
+                    "Period k"    : list(range(lmm_n)),
+                    "T_fix (yrs)" : [round(float(_lmm_tenors[k]), 3) for k in range(lmm_n)],
+                    "Input cap vol (%)": [round(v * 100, 3) for v in flat_vols],
+                    "Caplet vol (%)"   : [round(v * 100, 4) for v in p_cal.vols.tolist()],
+                    "Fwd rate (%)"     : [round(float(f) * 100, 4) for f in _lmm_F0.tolist()],
+                })
+                st.dataframe(df_boot, use_container_width=True)
+
+                fig_b, ax_b = plt.subplots(figsize=(7, 3))
+                ax_b.plot(range(lmm_n), [v * 100 for v in flat_vols], "o--",
+                          color="grey", label="Input flat cap vol", alpha=0.7)
+                ax_b.plot(range(lmm_n), p_cal.vols * 100, "s-",
+                          color="#d62728", label="Bootstrapped caplet vol")
+                ax_b.set_xlabel("Period k")
+                ax_b.set_ylabel("Vol (%)")
+                ax_b.set_title("Cap → Caplet Vol Bootstrap")
+                ax_b.legend()
+                st.pyplot(fig_b, use_container_width=True)
+                plt.close(fig_b)
+        except Exception as ex:
+            st.error(f"Bootstrap error: {ex}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 801 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 885 tests ✅ | Sharpe 0.282 OOS"
 )

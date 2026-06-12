@@ -72,6 +72,22 @@ from .cms import (
     cms_caplet_floorlet_parity,
     cms_spread_option_pv,
 )
+from .lmm import (
+    LMMParams,
+    LMMSimResult,
+    initial_forwards,
+    exponential_correlation,
+    simulate_lmm,
+    caplet_black76,
+    cap_black76,
+    cap_implied_vol,
+    caplet_lmm_mc,
+    swaption_lmm_mc,
+    rebonato_swaption_vol,
+    calibrate_caplet_vols,
+    calibrate_corr_decay,
+    swaption_implied_vol,
+)
 
 __all__ = [
     "DiscountCurve",
@@ -138,4 +154,18 @@ __all__ = [
     "cms_floorlet_pv",
     "cms_caplet_floorlet_parity",
     "cms_spread_option_pv",
+    "LMMParams",
+    "LMMSimResult",
+    "initial_forwards",
+    "exponential_correlation",
+    "simulate_lmm",
+    "caplet_black76",
+    "cap_black76",
+    "cap_implied_vol",
+    "caplet_lmm_mc",
+    "swaption_lmm_mc",
+    "rebonato_swaption_vol",
+    "calibrate_caplet_vols",
+    "calibrate_corr_decay",
+    "swaption_implied_vol",
 ]
