@@ -4,6 +4,7 @@ Uses httpx.AsyncClient via TestClient for synchronous testing.
 """
 from __future__ import annotations
 import pytest
+import numpy as np
 from fastapi.testclient import TestClient
 from api.main import app
 
@@ -1173,3 +1174,254 @@ class TestLMMEndpoints:
             "n_periods": 6, "flat_vol": 0.25, "corr_decay": 0.1,
         })
         assert r.json()["n_entries"] > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XVA Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestXVAEndpoints:
+    XVA_BODY = {
+        "sofr_on": 0.0433,
+        "fixed_rate": 0.045,
+        "maturity": 3.0,
+        "notional": 1e6,
+        "is_payer": True,
+        "recovery": 0.40,
+        "hazard_rate": 0.01,
+        "own_hazard": 0.005,
+        "funding_spread": 0.005,
+        "n_steps": 10,
+        "n_paths": 100,
+        "hw_a": 0.05,
+        "hw_sigma": 0.015,
+    }
+
+    def test_xva_price_200(self):
+        r = client.post("/xva/price", json=self.XVA_BODY)
+        assert r.status_code == 200
+
+    def test_xva_price_keys(self):
+        body = client.post("/xva/price", json=self.XVA_BODY).json()
+        for k in ["cva", "dva", "fva", "total_xva", "cva_bps"]:
+            assert k in body
+
+    def test_cva_positive(self):
+        body = client.post("/xva/price", json=self.XVA_BODY).json()
+        assert body["cva"] >= 0.0
+
+    def test_dva_positive(self):
+        body = client.post("/xva/price", json=self.XVA_BODY).json()
+        assert body["dva"] >= 0.0
+
+    def test_fva_finite(self):
+        body = client.post("/xva/price", json=self.XVA_BODY).json()
+        assert np.isfinite(body["fva"])
+
+    def test_cva_scales_with_hazard(self):
+        low = {**self.XVA_BODY, "hazard_rate": 0.005}
+        high = {**self.XVA_BODY, "hazard_rate": 0.05}
+        cva_low  = client.post("/xva/price", json=low).json()["cva"]
+        cva_high = client.post("/xva/price", json=high).json()["cva"]
+        assert cva_high >= cva_low
+
+    def test_epe_profile_200(self):
+        r = client.post("/xva/epe-profile", json=self.XVA_BODY)
+        assert r.status_code == 200
+
+    def test_epe_profile_keys(self):
+        body = client.post("/xva/epe-profile", json=self.XVA_BODY).json()
+        for k in ["times", "epe", "ene", "n_paths"]:
+            assert k in body
+
+    def test_epe_times_length(self):
+        body = client.post("/xva/epe-profile", json=self.XVA_BODY).json()
+        assert len(body["times"]) == len(body["epe"])
+
+    def test_epe_non_negative(self):
+        body = client.post("/xva/epe-profile", json=self.XVA_BODY).json()
+        assert all(v >= 0.0 for v in body["epe"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XCCY Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestXCCYEndpoints:
+    PAR_BODY = {
+        "usd_sofr": 0.0433,
+        "eur_rate": 0.038,
+        "spot_fx": 1.09,
+        "maturity": 5.0,
+        "notional_eur": 1e6,
+        "freq": 4,
+    }
+    PRICE_BODY = {**PAR_BODY, "basis_bps": 0.0}
+
+    def test_par_basis_200(self):
+        r = client.post("/xccy/par-basis", json=self.PAR_BODY)
+        assert r.status_code == 200
+
+    def test_par_basis_keys(self):
+        body = client.post("/xccy/par-basis", json=self.PAR_BODY).json()
+        for k in ["par_basis_bps", "spot_fx", "forward_fx", "maturity_years"]:
+            assert k in body
+
+    def test_par_basis_finite(self):
+        body = client.post("/xccy/par-basis", json=self.PAR_BODY).json()
+        assert np.isfinite(body["par_basis_bps"])
+
+    def test_higher_usd_rate_more_positive_basis(self):
+        low  = {**self.PAR_BODY, "usd_sofr": 0.03}
+        high = {**self.PAR_BODY, "usd_sofr": 0.06}
+        b_low  = client.post("/xccy/par-basis", json=low).json()["par_basis_bps"]
+        b_high = client.post("/xccy/par-basis", json=high).json()["par_basis_bps"]
+        assert b_high >= b_low
+
+    def test_xccy_price_200(self):
+        r = client.post("/xccy/price", json=self.PRICE_BODY)
+        assert r.status_code == 200
+
+    def test_xccy_price_keys(self):
+        body = client.post("/xccy/price", json=self.PRICE_BODY).json()
+        for k in ["pv_usd", "usd_leg_pv", "eur_leg_pv_usd", "par_basis_bps"]:
+            assert k in body
+
+    def test_xccy_par_swap_zero_pv(self):
+        body_par = client.post("/xccy/par-basis", json=self.PAR_BODY).json()
+        par_basis = body_par["par_basis_bps"]
+        price_body = {**self.PRICE_BODY, "basis_bps": par_basis}
+        body = client.post("/xccy/price", json=price_body).json()
+        # par-basis pricing: PV should be small relative to notional
+        assert abs(body["pv_usd"]) < self.PAR_BODY["notional_eur"] * 0.10
+
+    def test_basis_term_structure_200(self):
+        r = client.get("/xccy/basis-term-structure", params={
+            "usd_sofr": 0.0433, "eur_rate": 0.038, "spot_fx": 1.09,
+        })
+        assert r.status_code == 200
+
+    def test_basis_term_structure_keys(self):
+        body = client.get("/xccy/basis-term-structure", params={
+            "usd_sofr": 0.0433, "eur_rate": 0.038, "spot_fx": 1.09,
+        }).json()
+        assert "term_structure" in body
+        assert len(body["term_structure"]) == 9
+
+    def test_basis_term_structure_has_forward_fx(self):
+        body = client.get("/xccy/basis-term-structure", params={
+            "usd_sofr": 0.0433, "eur_rate": 0.038, "spot_fx": 1.09,
+        }).json()
+        for row in body["term_structure"]:
+            assert "forward_fx" in row
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Inflation Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestInflationEndpoints:
+    ZC_BODY = {
+        "maturity": 10.0,
+        "fixed_rate": 0.025,
+        "notional": 1e6,
+        "infl_rate": 0.025,
+        "sofr_on": 0.0433,
+        "is_receiver": False,
+    }
+    YOY_BODY = {
+        "maturity": 5.0,
+        "fixed_rate": 0.025,
+        "notional": 1e6,
+        "infl_rate": 0.025,
+        "sofr_on": 0.0433,
+        "freq": 1,
+        "is_receiver": False,
+    }
+    CAP_BODY = {
+        "maturity": 5.0,
+        "strike": 0.02,
+        "vol": 0.015,
+        "notional": 1e6,
+        "infl_rate": 0.025,
+        "sofr_on": 0.0433,
+        "is_cap": True,
+        "freq": 1,
+    }
+
+    def test_zc_price_200(self):
+        r = client.post("/inflation/zc-price", json=self.ZC_BODY)
+        assert r.status_code == 200
+
+    def test_zc_price_keys(self):
+        body = client.post("/inflation/zc-price", json=self.ZC_BODY).json()
+        for k in ["pv", "inflation_leg_pv", "fixed_leg_pv", "breakeven_rate"]:
+            assert k in body
+
+    def test_zc_at_par_near_zero_pv(self):
+        body = client.post("/inflation/zc-price", json=self.ZC_BODY).json()
+        assert abs(body["pv"]) < 1000  # at-par should be near zero
+
+    def test_zc_payer_receiver_opposite(self):
+        payer = client.post("/inflation/zc-price", json={**self.ZC_BODY, "is_receiver": False}).json()["pv"]
+        recvr = client.post("/inflation/zc-price", json={**self.ZC_BODY, "is_receiver": True}).json()["pv"]
+        assert abs(payer + recvr) < 1.0  # should sum to zero
+
+    def test_yoy_price_200(self):
+        r = client.post("/inflation/yoy-price", json=self.YOY_BODY)
+        assert r.status_code == 200
+
+    def test_yoy_price_keys(self):
+        body = client.post("/inflation/yoy-price", json=self.YOY_BODY).json()
+        for k in ["pv", "inflation_leg_pv", "fixed_leg_pv", "n_payments"]:
+            assert k in body
+
+    def test_yoy_n_payments(self):
+        body = client.post("/inflation/yoy-price", json=self.YOY_BODY).json()
+        assert body["n_payments"] == 5  # 5yr * 1/yr
+
+    def test_yoy_payer_receiver_opposite(self):
+        payer = client.post("/inflation/yoy-price", json={**self.YOY_BODY, "is_receiver": False}).json()["pv"]
+        recvr = client.post("/inflation/yoy-price", json={**self.YOY_BODY, "is_receiver": True}).json()["pv"]
+        assert abs(payer + recvr) < 1.0
+
+    def test_cap_floor_price_200(self):
+        r = client.post("/inflation/cap-floor-price", json=self.CAP_BODY)
+        assert r.status_code == 200
+
+    def test_cap_floor_price_keys(self):
+        body = client.post("/inflation/cap-floor-price", json=self.CAP_BODY).json()
+        for k in ["pv", "n_caplets", "is_cap"]:
+            assert k in body
+
+    def test_cap_pv_positive(self):
+        body = client.post("/inflation/cap-floor-price", json=self.CAP_BODY).json()
+        assert body["pv"] >= 0.0
+
+    def test_floor_pv_positive(self):
+        body = client.post("/inflation/cap-floor-price", json={**self.CAP_BODY, "is_cap": False}).json()
+        assert body["pv"] >= 0.0
+
+    def test_cap_floor_parity(self):
+        cap   = client.post("/inflation/cap-floor-price", json={**self.CAP_BODY, "is_cap": True}).json()["pv"]
+        floor = client.post("/inflation/cap-floor-price", json={**self.CAP_BODY, "is_cap": False}).json()["pv"]
+        assert abs(cap - floor) < 5e4  # rough cap-floor parity
+
+    def test_breakeven_200(self):
+        r = client.get("/inflation/breakeven", params={
+            "sofr_on": 0.0433, "infl_rate": 0.025, "maturity": 10.0,
+        })
+        assert r.status_code == 200
+
+    def test_breakeven_keys(self):
+        body = client.get("/inflation/breakeven", params={
+            "sofr_on": 0.0433, "infl_rate": 0.025, "maturity": 10.0,
+        }).json()
+        for k in ["breakeven_rate", "breakeven_bps", "maturity_years"]:
+            assert k in body
+
+    def test_breakeven_positive(self):
+        body = client.get("/inflation/breakeven", params={
+            "sofr_on": 0.0433, "infl_rate": 0.025, "maturity": 10.0,
+        }).json()
+        assert body["breakeven_rate"] > 0

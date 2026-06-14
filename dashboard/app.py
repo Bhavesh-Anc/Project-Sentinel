@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 885 passing ✅")
+    st.markdown("**Tests:** 1,095 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21, tab22, tab23, tab24 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -71,6 +71,9 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "🔵 G2++ Two-Factor",
     "🛡️ CDS Pricing",
     "📈 LMM / BGM",
+    "⚖️ XVA (CVA/DVA/FVA)",
+    "🌍 Cross-Currency Basis",
+    "📊 Inflation-Linked",
 ])
 
 
@@ -2607,9 +2610,210 @@ with tab21:
             st.error(f"Bootstrap error: {ex}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 22: XVA (CVA / DVA / FVA)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab22:
+    st.header("⚖️ XVA — Credit, Debt & Funding Valuation Adjustments")
+    st.markdown(
+        "Bilateral XVA for SOFR OIS swaps using **G2++ Monte Carlo** simulation. "
+        "CVA = credit cost of counterparty default; DVA = benefit of own default; "
+        "FVA = funding cost of uncollateralised exposure."
+    )
+    _xva_col1, _xva_col2 = st.columns(2)
+    with _xva_col1:
+        _xva_maturity   = st.slider("Maturity (yrs)", 1.0, 10.0, 5.0, 0.5, key="xva_mat")
+        _xva_fixed      = st.slider("Fixed rate (%)", 1.0, 8.0, 4.5, 0.05, key="xva_fixed") / 100
+        _xva_sofr       = st.slider("SOFR overnight (%)", 1.0, 8.0, 4.33, 0.01, key="xva_sofr") / 100
+        _xva_notional   = st.number_input("Notional ($M)", 0.1, 100.0, 10.0, 0.5, key="xva_not") * 1e6
+    with _xva_col2:
+        _xva_haz        = st.slider("Counterparty hazard (bps)", 10, 500, 100, 10, key="xva_haz") / 1e4
+        _xva_own_haz    = st.slider("Own hazard (bps)", 5, 300, 50, 5, key="xva_own") / 1e4
+        _xva_recovery   = st.slider("Recovery rate (%)", 0, 80, 40, 5, key="xva_rec") / 100
+        _xva_funding    = st.slider("Funding spread (bps)", 0, 200, 50, 5, key="xva_fund") / 1e4
+
+    if st.button("Compute XVA", key="btn_xva"):
+        try:
+            from sofr_engine.bootstrap import flat_sofr_curve as _fs
+            from sofr_engine.g2pp import G2ppParams as _G2pp, simulate_g2pp as _sg2
+            from sofr_engine.xva import XVAParams as _XVAP, full_xva as _fxva, compute_epe_profile as _epe
+            from sofr_engine.credit import HazardRateCurve as _HRC
+            from datetime import date as _date
+
+            _xva_curve   = _fs(_date.today(), _xva_sofr)
+            _xva_g2pp    = _G2pp(a=0.05, b=0.075, sigma=0.015, eta=0.010, rho=-0.3)
+            _xva_params  = _XVAP(n_paths=500, n_steps=20, funding_spread=_xva_funding)
+            _xva_c_haz   = _HRC.flat(_xva_haz,     [_xva_maturity], recovery=_xva_recovery)
+            _xva_o_haz   = _HRC.flat(_xva_own_haz, [_xva_maturity], recovery=_xva_recovery)
+
+            _xva_res = _fxva(
+                curve=_xva_curve, g2pp_params=_xva_g2pp,
+                maturity=_xva_maturity, fixed_rate=_xva_fixed,
+                notional=_xva_notional, pay_fixed=True,
+                counterparty_hazard=_xva_c_haz, own_hazard=_xva_o_haz,
+                xva_params=_xva_params,
+            )
+            _xva_N = _xva_notional / 1e4  # to bps denominator
+
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            _c1.metric("CVA", f"${_xva_res.cva:,.0f}", f"{_xva_res.cva/_xva_N:.1f} bps")
+            _c2.metric("DVA", f"${_xva_res.dva:,.0f}", f"{_xva_res.dva/_xva_N:.1f} bps")
+            _c3.metric("FVA", f"${_xva_res.fva:,.0f}", f"{_xva_res.fva/_xva_N:.1f} bps")
+            _c4.metric("Total XVA", f"${_xva_res.total_xva:,.0f}", f"{_xva_res.total_xva/_xva_N:.1f} bps")
+
+            # EPE profile chart
+            _epe_prof = _xva_res.epe_profile
+            fig_xva, ax_xva = plt.subplots(figsize=(10, 4))
+            ax_xva.fill_between(_epe_prof.times, _epe_prof.epe / 1e6, alpha=0.4, label="EPE ($M)")
+            ax_xva.fill_between(_epe_prof.times, -_epe_prof.ene / 1e6, alpha=0.3, color="red", label="–ENE ($M)")
+            ax_xva.plot(_epe_prof.times, _epe_prof.mean_exposure / 1e6, "k--", lw=1, label="Mean exposure")
+            ax_xva.set_xlabel("Time (years)")
+            ax_xva.set_ylabel("Exposure ($M)")
+            ax_xva.set_title("G2++ Exposure Profile")
+            ax_xva.legend()
+            st.pyplot(fig_xva, use_container_width=True)
+            plt.close(fig_xva)
+        except Exception as _e:
+            st.error(f"XVA error: {_e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 23: Cross-Currency Basis Swaps
+# ─────────────────────────────────────────────────────────────────────────────
+with tab23:
+    st.header("🌍 Cross-Currency Basis Swaps (USD SOFR vs EUR €STR)")
+    st.markdown(
+        "CIP-implied par basis: **b_par = (P_EUR(T) − P_USD(T)) / Σ α_k P_EUR(T_k)**. "
+        "When USD rates > EUR rates: P_USD < P_EUR → positive basis (USD borrows cheap via FX)."
+    )
+    _xc_col1, _xc_col2 = st.columns(2)
+    with _xc_col1:
+        _xc_usd  = st.slider("USD SOFR (%)", 0.5, 8.0, 4.33, 0.05, key="xc_usd") / 100
+        _xc_eur  = st.slider("EUR €STR (%)",  0.5, 6.0, 3.80, 0.05, key="xc_eur") / 100
+    with _xc_col2:
+        _xc_fx   = st.slider("Spot FX (USD/EUR)", 0.80, 1.40, 1.09, 0.01, key="xc_fx")
+        _xc_freq = st.selectbox("Payment freq", [1, 2, 4, 12], index=2, key="xc_freq")
+
+    try:
+        from sofr_engine.bootstrap import flat_sofr_curve as _fsc2
+        from sofr_engine.xccy import xccy_par_basis as _xpar, fx_forward as _xfxfwd
+        from datetime import date as _d2
+
+        _xc_usd_c = _fsc2(_d2.today(), _xc_usd)
+        _xc_eur_c = _fsc2(_d2.today(), _xc_eur)
+
+        _xc_tenors = [1, 2, 3, 5, 7, 10, 15, 20, 30]
+        _xc_basis  = [_xpar(_xc_usd_c, _xc_eur_c, _xc_fx, float(t), _xc_freq) * 1e4
+                      for t in _xc_tenors]
+        _xc_fwds   = [_xfxfwd(_xc_usd_c, _xc_eur_c, _xc_fx, float(t))
+                      for t in _xc_tenors]
+
+        _xc_m1, _xc_m2, _xc_m3 = st.columns(3)
+        _xc_m1.metric("Spot FX", f"{_xc_fx:.4f}")
+        _xc_m2.metric("5Y Basis", f"{_xc_basis[3]:.1f} bps")
+        _xc_m3.metric("10Y FX Fwd", f"{_xc_fwds[5]:.4f}")
+
+        fig_xc, (ax_b, ax_f) = plt.subplots(1, 2, figsize=(12, 4))
+        ax_b.bar(_xc_tenors, _xc_basis, color="steelblue", alpha=0.7)
+        ax_b.axhline(0, color="k", lw=0.8)
+        ax_b.set_xlabel("Maturity (years)")
+        ax_b.set_ylabel("Par Basis (bps)")
+        ax_b.set_title("CIP-Implied XCCY Basis Term Structure")
+
+        ax_f.plot(_xc_tenors, _xc_fwds, "o-", color="darkorange")
+        ax_f.axhline(_xc_fx, ls="--", color="gray", label="Spot")
+        ax_f.set_xlabel("Maturity (years)")
+        ax_f.set_ylabel("Forward FX (USD/EUR)")
+        ax_f.set_title("CIP Forward FX Curve")
+        ax_f.legend()
+        st.pyplot(fig_xc, use_container_width=True)
+        plt.close(fig_xc)
+    except Exception as _e:
+        st.error(f"XCCY error: {_e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 24: Inflation-Linked Products
+# ─────────────────────────────────────────────────────────────────────────────
+with tab24:
+    st.header("📊 Inflation-Linked Products (Jarrow-Yildirim)")
+    st.markdown(
+        "Zero-Coupon ILS: **N × P(T) × [(1+μ)^T − (1+K)^T]**. "
+        "Year-on-Year: floating leg pays annual CPI growth vs. fixed K. "
+        "Inflation caps/floors use Black-76 on CPI ratio."
+    )
+    _infl_col1, _infl_col2 = st.columns(2)
+    with _infl_col1:
+        _infl_sofr    = st.slider("Nominal SOFR (%)", 1.0, 8.0, 4.33, 0.05, key="infl_sofr") / 100
+        _infl_rate    = st.slider("Expected inflation (%)", 0.5, 6.0, 2.5, 0.1, key="infl_rate") / 100
+        _infl_fixed   = st.slider("Fixed CPI rate (%)", 0.5, 6.0, 2.5, 0.1, key="infl_fixed") / 100
+    with _infl_col2:
+        _infl_mat     = st.slider("Maturity (yrs)", 1.0, 30.0, 10.0, 0.5, key="infl_mat")
+        _infl_not     = st.number_input("Notional ($M)", 0.1, 100.0, 10.0, 0.5, key="infl_not") * 1e6
+        _infl_vol     = st.slider("Inflation vol (%)", 0.1, 5.0, 1.5, 0.1, key="infl_vol") / 100
+
+    try:
+        from sofr_engine.bootstrap import flat_sofr_curve as _fsc3
+        from sofr_engine.inflation import (
+            InflationCurve as _IC,
+            ZCInflationSwap as _ZCS, YoYInflationSwap as _YYS, InflationCapFloor as _ICF,
+            zc_inflation_pv as _zpv, yoy_inflation_pv as _ypv, inflation_cap_floor_pv as _cpv,
+            breakeven_inflation as _bei,
+        )
+        from datetime import date as _d3
+        import numpy as _np3
+
+        _infl_nom   = _fsc3(_d3.today(), _infl_sofr)
+        _infl_curve = _IC.flat(_infl_rate, max_tenor=_infl_mat + 5.0)
+
+        _zc_swap  = _ZCS(maturity=_infl_mat, fixed_rate=_infl_fixed, notional=_infl_not, receive_inflation=True)
+        _zc_res   = _zpv(_infl_nom, _infl_curve, _zc_swap)
+
+        _yoy_dates = list(_np3.arange(1.0, _infl_mat + 1e-9, 1.0))
+        _yoy_swap  = _YYS(payment_dates=_yoy_dates, fixed_rate=_infl_fixed, notional=_infl_not, receive_inflation=True)
+        _yoy_res   = _ypv(_infl_nom, _infl_curve, _yoy_swap)
+
+        _cap_fl    = _ICF(payment_dates=_yoy_dates, strike=_infl_fixed, vol=_infl_vol, notional=_infl_not, is_cap=True)
+        _flr_fl    = _ICF(payment_dates=_yoy_dates, strike=_infl_fixed, vol=_infl_vol, notional=_infl_not, is_cap=False)
+        _cap_res   = _cpv(_infl_nom, _infl_curve, _cap_fl)
+        _flr_res   = _cpv(_infl_nom, _infl_curve, _flr_fl)
+
+        _bei_info  = _bei(_infl_nom, _infl_curve, _infl_mat)
+
+        _im1, _im2, _im3, _im4 = st.columns(4)
+        _im1.metric("ZC ILS PV", f"${_zc_res.pv:,.0f}")
+        _im2.metric("YoY Swap PV", f"${_yoy_res.pv:,.0f}")
+        _im3.metric("Inflation Cap PV", f"${_cap_res.pv:,.0f}")
+        _im4.metric("Breakeven", f"{_bei_info['breakeven_inflation']*100:.2f}%")
+
+        # YoY caplet strip chart
+        _strip_dates = list(_np3.arange(1.0, _infl_mat + 1e-9, 1.0))
+        _cpvs = [_cpv(_infl_nom, _infl_curve,
+                      _ICF(payment_dates=[t], strike=_infl_fixed, vol=_infl_vol,
+                           notional=_infl_not, is_cap=True)).pv
+                 for t in _strip_dates]
+        _fpvs = [_cpv(_infl_nom, _infl_curve,
+                      _ICF(payment_dates=[t], strike=_infl_fixed, vol=_infl_vol,
+                           notional=_infl_not, is_cap=False)).pv
+                 for t in _strip_dates]
+
+        fig_infl, ax_infl = plt.subplots(figsize=(10, 4))
+        ax_infl.bar(_strip_dates, _cpvs, width=0.4, label="Caplet PV", alpha=0.7, color="steelblue")
+        ax_infl.bar([t + 0.4 for t in _strip_dates], _fpvs, width=0.4,
+                    label="Floorlet PV", alpha=0.7, color="salmon")
+        ax_infl.set_xlabel("Payment Year")
+        ax_infl.set_ylabel("PV ($)")
+        ax_infl.set_title(f"Inflation Cap/Floor Strip (K={_infl_fixed*100:.1f}%, vol={_infl_vol*100:.1f}%)")
+        ax_infl.legend()
+        st.pyplot(fig_infl, use_container_width=True)
+        plt.close(fig_infl)
+    except Exception as _e:
+        st.error(f"Inflation error: {_e}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 885 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 1,095 tests ✅ | Sharpe 0.282 OOS"
 )

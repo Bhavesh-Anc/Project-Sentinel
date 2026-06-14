@@ -98,6 +98,31 @@ from sofr_engine.lmm import (
     calibrate_caplet_vols as _cal_cap_vols,
     calibrate_corr_decay as _cal_corr,
 )
+from sofr_engine.xva import (
+    XVAParams as _XVAParams,
+    compute_epe_profile as _compute_epe,
+    full_xva as _full_xva,
+)
+from sofr_engine.xccy import (
+    FXForwardCurve as _FXFwdCurve,
+    CrossCurrencySwap as _XCCYSwap,
+    fx_forward as _fx_fwd,
+    xccy_par_basis as _xccy_par,
+    xccy_swap_pv as _xccy_pv,
+    xccy_dv01 as _xccy_dv01,
+    xccy_basis_term_structure as _xccy_term,
+)
+from sofr_engine.inflation import (
+    InflationCurve as _InflCurve,
+    ZCInflationSwap as _ZCSwap,
+    YoYInflationSwap as _YoYSwap,
+    InflationCapFloor as _InflCapFloor,
+    zc_inflation_pv as _zc_pv,
+    yoy_inflation_pv as _yoy_pv,
+    inflation_cap_floor_pv as _infl_cf_pv,
+    breakeven_inflation as _breakeven,
+    calibrate_inflation_curve as _cal_infl,
+)
 from dateutil.relativedelta import relativedelta
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -1568,6 +1593,334 @@ def lmm_rebonato_surface(
                     "rebonato_vol_pct": round(vol * 100, 4),
                 })
         return {"surface": surface, "n_entries": len(surface), "n_periods": N}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XVA  (CVA / DVA / FVA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class XVAPriceRequest(BaseModel):
+    sofr_on:        float = Field(0.0433, ge=0.0, le=0.15, description="SOFR overnight rate")
+    fixed_rate:     float = Field(0.045,  ge=0.0, le=0.15, description="Swap fixed rate (decimal)")
+    maturity:       float = Field(5.0,    ge=0.5, le=30.0, description="Maturity in years")
+    notional:       float = Field(1e6,    ge=1.0,          description="Notional")
+    is_payer:       bool  = Field(True,                    description="True = we pay fixed")
+    recovery:       float = Field(0.40,   ge=0.0, le=1.0,  description="LGD recovery rate")
+    hazard_rate:    float = Field(0.01,   ge=0.0, le=0.5,  description="Flat hazard rate")
+    own_hazard:     float = Field(0.005,  ge=0.0, le=0.5,  description="Own hazard rate (for DVA)")
+    funding_spread: float = Field(0.005,  ge=0.0, le=0.1,  description="Funding spread (for FVA)")
+    n_steps:        int   = Field(20,     ge=5,  le=100,   description="Time steps for EPE")
+    n_paths:        int   = Field(500,    ge=100, le=5000,  description="MC paths")
+    hw_a:           float = Field(0.05,   ge=1e-4, le=1.0, description="Hull-White mean reversion")
+    hw_sigma:       float = Field(0.015,  ge=1e-4, le=0.5, description="Hull-White vol")
+
+
+def _build_xva_inputs(req: XVAPriceRequest):
+    curve = flat_sofr_curve(date.today(), req.sofr_on)
+    g2pp = G2ppParams(
+        a=req.hw_a, b=req.hw_a * 1.5,
+        sigma=req.hw_sigma, eta=req.hw_sigma * 0.7,
+        rho=-0.3,
+    )
+    xva_params = _XVAParams(
+        n_paths=req.n_paths,
+        n_steps=req.n_steps,
+        funding_spread=req.funding_spread,
+    )
+    mats = [req.maturity]
+    c_haz = _HazardCurve.flat(req.hazard_rate, mats, recovery=req.recovery)
+    o_haz = _HazardCurve.flat(req.own_hazard,   mats, recovery=req.recovery)
+    return curve, g2pp, xva_params, c_haz, o_haz
+
+
+@app.post("/xva/price", tags=["XVA"])
+def xva_price(req: XVAPriceRequest):
+    """Compute CVA, DVA, and FVA for an interest-rate swap using G2++ MC simulation."""
+    try:
+        curve, g2pp, xva_params, c_haz, o_haz = _build_xva_inputs(req)
+        result = _full_xva(
+            curve=curve,
+            g2pp_params=g2pp,
+            maturity=req.maturity,
+            fixed_rate=req.fixed_rate,
+            notional=req.notional,
+            pay_fixed=req.is_payer,
+            counterparty_hazard=c_haz,
+            own_hazard=o_haz,
+            xva_params=xva_params,
+        )
+        return {
+            "cva_bps":       round(result.cva / req.notional * 1e4, 4),
+            "dva_bps":       round(result.dva / req.notional * 1e4, 4),
+            "fva_bps":       round(result.fva / req.notional * 1e4, 4),
+            "total_xva_bps": round(result.total_xva / req.notional * 1e4, 4),
+            "cva":           round(result.cva, 4),
+            "dva":           round(result.dva, 4),
+            "fva":           round(result.fva, 4),
+            "total_xva":     round(result.total_xva, 4),
+            "n_steps":       xva_params.n_steps,
+            "n_paths":       xva_params.n_paths,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/xva/epe-profile", tags=["XVA"])
+def xva_epe_profile(req: XVAPriceRequest):
+    """Return the Expected Positive Exposure profile over time."""
+    try:
+        curve, g2pp, xva_params, c_haz, o_haz = _build_xva_inputs(req)
+        epe = _compute_epe(
+            curve=curve,
+            g2pp_params=g2pp,
+            maturity=req.maturity,
+            fixed_rate=req.fixed_rate,
+            notional=req.notional,
+            pay_fixed=req.is_payer,
+            xva_params=xva_params,
+        )
+        return {
+            "times":   [round(float(t), 4) for t in epe.times],
+            "epe":     [round(float(v), 4) for v in epe.epe],
+            "ene":     [round(float(v), 4) for v in epe.ene],
+            "n_paths": xva_params.n_paths,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cross-Currency Basis Swaps
+# ══════════════════════════════════════════════════════════════════════════════
+
+class XCCYParBasisRequest(BaseModel):
+    usd_sofr:    float = Field(0.0433, ge=0.0, le=0.15, description="USD SOFR overnight")
+    eur_rate:    float = Field(0.038,  ge=0.0, le=0.15, description="EUR OIS overnight")
+    spot_fx:     float = Field(1.09,   ge=0.5, le=2.0,  description="Spot FX (USD per EUR)")
+    maturity:    float = Field(5.0,    ge=0.5, le=30.0, description="Swap maturity years")
+    notional_eur:float = Field(1e6,   ge=1.0,           description="EUR notional")
+    freq:        int   = Field(4,      ge=1,   le=12,    description="Payment frequency per year")
+
+
+class XCCYPriceRequest(BaseModel):
+    usd_sofr:    float = Field(0.0433, ge=0.0, le=0.15)
+    eur_rate:    float = Field(0.038,  ge=0.0, le=0.15)
+    spot_fx:     float = Field(1.09,   ge=0.5, le=2.0)
+    maturity:    float = Field(5.0,    ge=0.5, le=30.0)
+    notional_eur:float = Field(1e6,   ge=1.0)
+    basis_bps:   float = Field(0.0,   ge=-200.0, le=200.0, description="Basis spread in bps")
+    freq:        int   = Field(4,      ge=1,  le=12)
+
+
+def _build_xccy_curves(usd_sofr, eur_rate, spot_fx):
+    usd_curve = flat_sofr_curve(date.today(), usd_sofr)
+    eur_curve = flat_sofr_curve(date.today(), eur_rate)
+    fx_curve = _FXFwdCurve(
+        spot_fx=spot_fx,
+        usd_curve=usd_curve,
+        eur_curve=eur_curve,
+    )
+    return usd_curve, eur_curve, fx_curve
+
+
+@app.post("/xccy/par-basis", tags=["XCCY"])
+def xccy_par_basis_endpoint(req: XCCYParBasisRequest):
+    """Compute the CIP-implied par basis spread for a cross-currency swap."""
+    try:
+        usd_curve, eur_curve, fx_curve = _build_xccy_curves(req.usd_sofr, req.eur_rate, req.spot_fx)
+        basis = _xccy_par(usd_curve, eur_curve, req.spot_fx, req.maturity, req.freq)
+        fwd = _fx_fwd(usd_curve, eur_curve, req.spot_fx, req.maturity)
+        return {
+            "par_basis_bps":  round(float(basis * 1e4), 4),
+            "spot_fx":        req.spot_fx,
+            "forward_fx":     round(float(fwd), 6),
+            "maturity_years": req.maturity,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/xccy/price", tags=["XCCY"])
+def xccy_price_endpoint(req: XCCYPriceRequest):
+    """Price a cross-currency basis swap (MTM to USD)."""
+    try:
+        usd_curve, eur_curve, fx_curve = _build_xccy_curves(req.usd_sofr, req.eur_rate, req.spot_fx)
+        swap = _XCCYSwap(
+            maturity_years=req.maturity,
+            notional_usd=req.notional_eur * req.spot_fx,
+            freq=req.freq,
+            basis_spread=req.basis_bps / 1e4,
+        )
+        result = _xccy_pv(usd_curve, eur_curve, req.spot_fx, swap)
+        return {
+            "pv_usd":           round(float(result.pv_usd), 2),
+            "usd_leg_pv":       round(float(result.usd_leg_pv), 2),
+            "eur_leg_pv_usd":   round(float(result.eur_leg_pv_in_usd), 2),
+            "par_basis_bps":    round(float(result.par_basis_bps), 4),
+            "eur_annuity_usd":  round(float(result.eur_annuity_in_usd), 2),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/xccy/basis-term-structure", tags=["XCCY"])
+def xccy_basis_term_structure_endpoint(
+    usd_sofr: float = 0.0433,
+    eur_rate: float = 0.038,
+    spot_fx:  float = 1.09,
+    freq:     int   = 4,
+):
+    """Return the CIP-implied basis spread across maturities (1Y to 30Y)."""
+    try:
+        usd_curve, eur_curve, fx_curve = _build_xccy_curves(usd_sofr, eur_rate, spot_fx)
+        tenors = [1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0, 30.0]
+        rows = []
+        for t in tenors:
+            b = _xccy_par(usd_curve, eur_curve, spot_fx, t, freq)
+            fwd = _fx_fwd(usd_curve, eur_curve, spot_fx, t)
+            rows.append({
+                "maturity_years": t,
+                "par_basis_bps":  round(float(b * 1e4), 4),
+                "forward_fx":     round(float(fwd), 6),
+            })
+        return {"term_structure": rows, "spot_fx": spot_fx}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Inflation-Linked Products
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ZCInflationRequest(BaseModel):
+    maturity:      float = Field(10.0,  ge=0.5, le=30.0, description="Maturity in years")
+    fixed_rate:    float = Field(0.025, ge=-0.05, le=0.15, description="Fixed CPI growth rate")
+    notional:      float = Field(1e6,   ge=1.0,            description="Notional")
+    infl_rate:     float = Field(0.025, ge=-0.05, le=0.15, description="Expected inflation rate")
+    sofr_on:       float = Field(0.0433, ge=0.0, le=0.15, description="SOFR overnight")
+    is_receiver:   bool  = Field(False, description="True = we receive CPI, pay fixed")
+
+
+class YoYInflationRequest(BaseModel):
+    maturity:    float = Field(5.0,  ge=0.5, le=30.0)
+    fixed_rate:  float = Field(0.025, ge=-0.05, le=0.15)
+    notional:    float = Field(1e6,  ge=1.0)
+    infl_rate:   float = Field(0.025, ge=-0.05, le=0.15)
+    sofr_on:     float = Field(0.0433, ge=0.0, le=0.15)
+    freq:        int   = Field(1, ge=1, le=4)
+    is_receiver: bool  = Field(False)
+
+
+class InflationCapFloorRequest(BaseModel):
+    maturity:    float = Field(5.0,  ge=0.5, le=30.0)
+    strike:      float = Field(0.02, ge=-0.05, le=0.15)
+    vol:         float = Field(0.015, ge=0.0, le=1.0, description="Implied vol of CPI ratio")
+    notional:    float = Field(1e6,  ge=1.0)
+    infl_rate:   float = Field(0.025, ge=-0.05, le=0.15)
+    sofr_on:     float = Field(0.0433, ge=0.0, le=0.15)
+    is_cap:      bool  = Field(True, description="True = cap, False = floor")
+    freq:        int   = Field(1, ge=1, le=4)
+
+
+def _build_infl(sofr_on: float, infl_rate: float, maturity: float):
+    curve = flat_sofr_curve(date.today(), sofr_on)
+    infl_curve = _InflCurve.flat(infl_rate, max_tenor=maturity + 5.0)
+    return curve, infl_curve
+
+
+@app.post("/inflation/zc-price", tags=["Inflation"])
+def inflation_zc_price(req: ZCInflationRequest):
+    """Price a Zero-Coupon Inflation-Linked Swap."""
+    try:
+        curve, infl_curve = _build_infl(req.sofr_on, req.infl_rate, req.maturity)
+        swap = _ZCSwap(
+            maturity=req.maturity,
+            fixed_rate=req.fixed_rate,
+            notional=req.notional,
+            receive_inflation=not req.is_receiver,
+        )
+        result = _zc_pv(curve, infl_curve, swap)
+        be_info = _breakeven(curve, infl_curve, req.maturity)
+        return {
+            "pv":                round(float(result.pv), 2),
+            "inflation_leg_pv":  round(float(result.float_leg_pv), 2),
+            "fixed_leg_pv":      round(float(result.fixed_leg_pv), 2),
+            "breakeven_rate":    round(float(be_info["breakeven_inflation"]), 6),
+            "breakeven_bps":     round(float(be_info["breakeven_inflation"]) * 1e4, 2),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/inflation/yoy-price", tags=["Inflation"])
+def inflation_yoy_price(req: YoYInflationRequest):
+    """Price a Year-on-Year Inflation-Linked Swap."""
+    try:
+        curve, infl_curve = _build_infl(req.sofr_on, req.infl_rate, req.maturity)
+        dt = 1.0 / req.freq
+        payment_dates = list(np.arange(dt, req.maturity + 1e-10, dt))
+        swap = _YoYSwap(
+            payment_dates=payment_dates,
+            fixed_rate=req.fixed_rate,
+            notional=req.notional,
+            receive_inflation=not req.is_receiver,
+        )
+        result = _yoy_pv(curve, infl_curve, swap)
+        return {
+            "pv":               round(float(result.pv), 2),
+            "inflation_leg_pv": round(float(result.float_leg_pv), 2),
+            "fixed_leg_pv":     round(float(result.fixed_leg_pv), 2),
+            "n_payments":       result.n_periods,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/inflation/cap-floor-price", tags=["Inflation"])
+def inflation_cap_floor_price(req: InflationCapFloorRequest):
+    """Price an Inflation Cap or Floor strip using Black-76 on CPI ratios."""
+    try:
+        curve, infl_curve = _build_infl(req.sofr_on, req.infl_rate, req.maturity)
+        dt = 1.0 / req.freq
+        payment_dates = list(np.arange(dt, req.maturity + 1e-10, dt))
+        cap_floor = _InflCapFloor(
+            payment_dates=payment_dates,
+            strike=req.strike,
+            vol=req.vol,
+            notional=req.notional,
+            is_cap=req.is_cap,
+        )
+        result = _infl_cf_pv(curve, infl_curve, cap_floor)
+        return {
+            "pv":         round(float(result.pv), 2),
+            "n_caplets":  len(result.caplet_pvs),
+            "is_cap":     req.is_cap,
+            "strike_pct": round(req.strike * 100, 4),
+            "vol_pct":    round(req.vol * 100, 4),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/inflation/breakeven", tags=["Inflation"])
+def inflation_breakeven(
+    sofr_on:    float = 0.0433,
+    infl_rate:  float = 0.025,
+    maturity:   float = 10.0,
+):
+    """Return the breakeven inflation rate implied by nominal vs. real yields."""
+    try:
+        curve, infl_curve = _build_infl(sofr_on, infl_rate, maturity)
+        be_info = _breakeven(curve, infl_curve, maturity)
+        return {
+            "maturity_years":    maturity,
+            "breakeven_rate":    round(float(be_info["breakeven_inflation"]), 6),
+            "breakeven_bps":     round(float(be_info["breakeven_inflation"]) * 1e4, 2),
+            "nominal_sofr":      sofr_on,
+            "real_infl_rate":    infl_rate,
+        }
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
