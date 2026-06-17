@@ -1425,3 +1425,131 @@ class TestInflationEndpoints:
             "sofr_on": 0.0433, "infl_rate": 0.025, "maturity": 10.0,
         }).json()
         assert body["breakeven_rate"] > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Callable Bond Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCallableBondEndpoints:
+    BULLET = {
+        "face": 100.0, "coupon": 0.05, "maturity": 5.0, "freq": 2,
+        "sofr_on": 0.05, "hw_a": 0.10, "hw_sigma": 0.01, "dt": 0.25,
+        "call_schedule": [], "put_schedule": [],
+    }
+    CALLABLE = {
+        **BULLET, "coupon": 0.06,
+        "call_schedule": [{"time": 2.0, "price": 100.0}, {"time": 3.0, "price": 100.0}],
+    }
+
+    def test_bullet_price_200(self):
+        r = client.post("/callable-bond/price", json=self.BULLET)
+        assert r.status_code == 200
+
+    def test_callable_price_200(self):
+        r = client.post("/callable-bond/price", json=self.CALLABLE)
+        assert r.status_code == 200
+
+    def test_price_keys(self):
+        body = client.post("/callable-bond/price", json=self.BULLET).json()
+        for k in ["price", "straight_price", "option_value", "oas_bps",
+                  "effective_duration", "effective_convexity"]:
+            assert k in body
+
+    def test_callable_price_le_straight(self):
+        body = client.post("/callable-bond/price", json=self.CALLABLE).json()
+        assert body["price"] <= body["straight_price"] + 0.05
+
+    def test_option_value_nonneg(self):
+        body = client.post("/callable-bond/price", json=self.CALLABLE).json()
+        assert body["option_value"] >= -0.05
+
+    def test_duration_positive(self):
+        body = client.post("/callable-bond/price", json=self.BULLET).json()
+        assert body["effective_duration"] > 0.0
+
+    def test_straight_price_200(self):
+        r = client.get("/callable-bond/straight-price", params={
+            "sofr_on": 0.05, "coupon": 0.05, "maturity": 5.0, "freq": 2
+        })
+        assert r.status_code == 200
+
+    def test_straight_price_keys(self):
+        body = client.get("/callable-bond/straight-price", params={
+            "sofr_on": 0.05, "coupon": 0.05, "maturity": 5.0
+        }).json()
+        assert "straight_price" in body
+
+    def test_market_price_oas(self):
+        body = client.post("/callable-bond/price",
+                           json={**self.CALLABLE, "market_price": 98.0}).json()
+        assert body["oas_bps"] > 0.0  # priced below model → positive OAS
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FX Options Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFXOptionEndpoints:
+    OPT = {
+        "spot": 1.09, "strike": 1.09, "vol": 0.08,
+        "domestic_rate": 0.04, "foreign_rate": 0.03,
+        "maturity": 1.0, "is_call": True,
+    }
+    SMILE_REQ = {
+        "maturities": [0.25, 0.5, 1.0, 2.0],
+        "atm_vols":   [0.07, 0.08, 0.09, 0.10],
+        "rr25":       [0.002, 0.003, 0.004, 0.005],
+        "bf25":       [0.001, 0.001, 0.002, 0.002],
+        "spot": 1.09, "domestic_rate": 0.04, "foreign_rate": 0.03,
+        "target_mat": 1.0, "n_strikes": 11,
+    }
+
+    def test_fx_price_200(self):
+        r = client.post("/fx/price", json=self.OPT)
+        assert r.status_code == 200
+
+    def test_fx_price_keys(self):
+        body = client.post("/fx/price", json=self.OPT).json()
+        for k in ["pv", "delta", "gamma", "vega", "theta"]:
+            assert k in body
+
+    def test_call_pv_positive(self):
+        body = client.post("/fx/price", json=self.OPT).json()
+        assert body["pv"] > 0.0
+
+    def test_put_pv_positive(self):
+        body = client.post("/fx/price", json={**self.OPT, "is_call": False}).json()
+        assert body["pv"] > 0.0
+
+    def test_call_delta_in_range(self):
+        body = client.post("/fx/price", json=self.OPT).json()
+        assert 0.0 < body["delta"] < 1.0
+
+    def test_put_delta_in_range(self):
+        body = client.post("/fx/price", json={**self.OPT, "is_call": False}).json()
+        assert -1.0 < body["delta"] < 0.0
+
+    def test_implied_vol_200(self):
+        r = client.post("/fx/implied-vol", json=self.OPT)
+        assert r.status_code == 200
+
+    def test_implied_vol_roundtrip(self):
+        body = client.post("/fx/implied-vol", json=self.OPT).json()
+        assert abs(body["implied_vol"] - self.OPT["vol"]) < 1e-4
+
+    def test_smile_200(self):
+        r = client.post("/fx/smile", json=self.SMILE_REQ)
+        assert r.status_code == 200
+
+    def test_smile_keys(self):
+        body = client.post("/fx/smile", json=self.SMILE_REQ).json()
+        assert "strikes" in body and "vols_pct" in body
+
+    def test_smile_length(self):
+        body = client.post("/fx/smile", json=self.SMILE_REQ).json()
+        assert len(body["strikes"]) == 11
+
+    def test_smile_vols_positive(self):
+        body = client.post("/fx/smile", json=self.SMILE_REQ).json()
+        assert all(v > 0 for v in body["vols_pct"])

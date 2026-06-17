@@ -111,6 +111,29 @@ from .inflation import (
     breakeven_inflation,
     calibrate_inflation_curve,
 )
+from .callable_bond import (
+    HWTreeParams,
+    CallableBond,
+    CallableBondResult,
+    price_callable_bond,
+    price_callable_bond_full,
+    straight_bond_price,
+    calibrate_oas,
+    effective_duration,
+    effective_convexity,
+)
+from .fx_options import (
+    FXOptionParams,
+    FXOptionResult,
+    gk_price,
+    gk_greeks,
+    gk_implied_vol,
+    FXVolSurface,
+    vol_for_strike,
+    fx_smile,
+    FXVolCone,
+    vol_cone,
+)
 from .lmm import (
     LMMParams,
     LMMSimResult,
@@ -207,6 +230,27 @@ __all__ = [
     "calibrate_caplet_vols",
     "calibrate_corr_decay",
     "swaption_implied_vol",
+    # Callable Bond
+    "HWTreeParams",
+    "CallableBond",
+    "CallableBondResult",
+    "price_callable_bond",
+    "price_callable_bond_full",
+    "straight_bond_price",
+    "calibrate_oas",
+    "effective_duration",
+    "effective_convexity",
+    # FX Options
+    "FXOptionParams",
+    "FXOptionResult",
+    "gk_price",
+    "gk_greeks",
+    "gk_implied_vol",
+    "FXVolSurface",
+    "vol_for_strike",
+    "fx_smile",
+    "FXVolCone",
+    "vol_cone",
     # XVA
     "XVAParams",
     "EPEProfile",

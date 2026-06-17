@@ -1925,6 +1925,192 @@ def inflation_breakeven(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Callable Bond (Hull-White Trinomial Tree + OAS)
+# ══════════════════════════════════════════════════════════════════════════════
+from sofr_engine.callable_bond import (
+    HWTreeParams as _HWTree,
+    CallableBond as _CBond,
+    price_callable_bond as _price_cb,
+    straight_bond_price as _straight_cb,
+    calibrate_oas as _cal_oas,
+    effective_duration as _eff_dur,
+    effective_convexity as _eff_cvx,
+    price_callable_bond_full as _cb_full,
+)
+
+
+class CallableBondRequest(BaseModel):
+    face:          float = Field(100.0,  ge=1.0,   description="Face value")
+    coupon:        float = Field(0.06,   ge=0.0, le=0.30, description="Annual coupon rate (decimal)")
+    maturity:      float = Field(5.0,    ge=0.5, le=30.0, description="Maturity in years")
+    freq:          int   = Field(2,      ge=1,   le=4,    description="Coupon freq per year")
+    sofr_on:       float = Field(0.0433, ge=0.0, le=0.15, description="SOFR overnight rate")
+    hw_a:          float = Field(0.10,   ge=1e-4, le=2.0, description="HW mean reversion")
+    hw_sigma:      float = Field(0.01,   ge=1e-4, le=0.20, description="HW short-rate vol")
+    dt:            float = Field(0.25,   ge=0.01, le=1.0,  description="Tree time step (years)")
+    call_schedule: list  = Field(default_factory=list, description="[{time, price}, …]")
+    put_schedule:  list  = Field(default_factory=list, description="[{time, price}, …]")
+    market_price:  float | None = Field(None, description="If set, calibrates OAS")
+
+
+def _parse_schedule(sched: list) -> list:
+    return [(float(s["time"]), float(s["price"])) for s in sched]
+
+
+@app.post("/callable-bond/price", tags=["Callable Bond"])
+def callable_bond_price(req: CallableBondRequest):
+    """Price a callable/putable bond on a Hull-White trinomial tree, with optional OAS calibration."""
+    try:
+        curve = flat_sofr_curve(date.today(), req.sofr_on)
+        hw    = _HWTree(a=req.hw_a, sigma=req.hw_sigma, dt=req.dt)
+        bond  = _CBond(
+            face=req.face, coupon=req.coupon, maturity=req.maturity, freq=req.freq,
+            call_schedule=_parse_schedule(req.call_schedule),
+            put_schedule=_parse_schedule(req.put_schedule),
+        )
+        res = _cb_full(curve, hw, bond, market_price=req.market_price)
+        return {
+            "price":               round(res.price, 4),
+            "straight_price":      round(res.straight_price, 4),
+            "option_value":        round(res.option_value, 4),
+            "oas_bps":             round(res.oas * 1e4, 2),
+            "effective_duration":  round(res.effective_duration, 4),
+            "effective_convexity": round(res.effective_convexity, 4),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/callable-bond/straight-price", tags=["Callable Bond"])
+def callable_bond_straight(
+    sofr_on: float = 0.0433,
+    coupon:  float = 0.06,
+    maturity: float = 5.0,
+    freq:    int   = 2,
+    face:    float = 100.0,
+):
+    """Analytical straight bond price (no optionality)."""
+    try:
+        curve = flat_sofr_curve(date.today(), sofr_on)
+        bond  = _CBond(face=face, coupon=coupon, maturity=maturity, freq=freq)
+        p = _straight_cb(curve, bond)
+        return {"straight_price": round(p, 4), "face": face,
+                "coupon_pct": round(coupon * 100, 4), "maturity": maturity}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FX Options (Garman-Kohlhagen + Vanna-Volga Surface)
+# ══════════════════════════════════════════════════════════════════════════════
+from sofr_engine.fx_options import (
+    FXOptionParams as _FXParams,
+    gk_price as _gk_price,
+    gk_greeks as _gk_greeks,
+    gk_implied_vol as _gk_iv,
+    FXVolSurface as _FXSurface,
+    vol_for_strike as _vfs,
+    fx_smile as _fx_smile,
+)
+
+
+class FXOptionRequest(BaseModel):
+    spot:          float = Field(1.09,  ge=0.01, le=1000.0, description="Spot FX rate")
+    strike:        float = Field(1.09,  ge=0.01, le=1000.0, description="Strike")
+    vol:           float = Field(0.08,  ge=0.001, le=5.0,   description="Implied vol (decimal)")
+    domestic_rate: float = Field(0.04,  ge=-0.1, le=0.2,   description="Domestic rate (USD)")
+    foreign_rate:  float = Field(0.03,  ge=-0.1, le=0.2,   description="Foreign rate (EUR)")
+    maturity:      float = Field(1.0,   ge=0.01, le=5.0,   description="Maturity (years)")
+    is_call:       bool  = Field(True,                      description="Call or put")
+
+
+class FXSmileRequest(BaseModel):
+    maturities:    list  = Field([0.25, 0.5, 1.0, 2.0], description="Tenors in years")
+    atm_vols:      list  = Field([0.07, 0.08, 0.09, 0.10])
+    rr25:          list  = Field([0.002, 0.003, 0.004, 0.005], description="25Δ risk reversals")
+    bf25:          list  = Field([0.001, 0.001, 0.002, 0.002], description="25Δ butterflies")
+    spot:          float = Field(1.09,  ge=0.01, le=1000.0)
+    domestic_rate: float = Field(0.04,  ge=-0.1, le=0.2)
+    foreign_rate:  float = Field(0.03,  ge=-0.1, le=0.2)
+    target_mat:    float = Field(1.0,   ge=0.01, le=10.0, description="Target maturity for smile")
+    n_strikes:     int   = Field(21,    ge=5,   le=101)
+
+
+@app.post("/fx/price", tags=["FX Options"])
+def fx_option_price(req: FXOptionRequest):
+    """Price a vanilla FX option and return full Garman-Kohlhagen Greeks."""
+    try:
+        p = _FXParams(
+            spot=req.spot, strike=req.strike, vol=req.vol,
+            domestic_rate=req.domestic_rate, foreign_rate=req.foreign_rate,
+            maturity=req.maturity, is_call=req.is_call,
+        )
+        res = _gk_greeks(p)
+        return {
+            "pv":     round(res.pv, 6),
+            "delta":  round(res.delta, 6),
+            "gamma":  round(res.gamma, 6),
+            "vega":   round(res.vega, 6),
+            "theta":  round(res.theta, 6),
+            "rho_d":  round(res.rho_d, 6),
+            "rho_f":  round(res.rho_f, 6),
+            "vanna":  round(res.vanna, 6),
+            "volga":  round(res.volga, 6),
+            "is_call": req.is_call,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/fx/implied-vol", tags=["FX Options"])
+def fx_implied_vol(req: FXOptionRequest):
+    """Back out implied vol from a market price using Newton-Raphson."""
+    try:
+        p = _FXParams(
+            spot=req.spot, strike=req.strike, vol=req.vol,
+            domestic_rate=req.domestic_rate, foreign_rate=req.foreign_rate,
+            maturity=req.maturity, is_call=req.is_call,
+        )
+        market_price = _gk_price(p)  # use vol as market price for demo
+        iv = _gk_iv(
+            market_price, req.spot, req.strike,
+            req.domestic_rate, req.foreign_rate,
+            req.maturity, req.is_call,
+        )
+        return {
+            "implied_vol":     round(iv, 6),
+            "implied_vol_pct": round(iv * 100, 4),
+            "market_price":    round(market_price, 6),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/fx/smile", tags=["FX Options"])
+def fx_vol_smile(req: FXSmileRequest):
+    """Return the Vanna-Volga smile (strikes, vols) at a target maturity."""
+    try:
+        surface = _FXSurface(
+            maturities=req.maturities,
+            atm_vols=req.atm_vols,
+            rr25=req.rr25,
+            bf25=req.bf25,
+            spot=req.spot,
+            domestic_rate=req.domestic_rate,
+            foreign_rate=req.foreign_rate,
+        )
+        strikes, vols = _fx_smile(surface, req.target_mat, req.n_strikes)
+        return {
+            "strikes":    [round(float(k), 6) for k in strikes],
+            "vols_pct":   [round(float(v) * 100, 4) for v in vols],
+            "target_mat": req.target_mat,
+            "n_strikes":  req.n_strikes,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)

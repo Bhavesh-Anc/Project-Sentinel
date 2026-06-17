@@ -43,13 +43,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 1,095 passing ✅")
+    st.markdown("**Tests:** 1,202 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
 
 # ── Tab layout ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21, tab22, tab23, tab24 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21, tab22, tab23, tab24, tab25, tab26 = st.tabs([
     "📊 SOFR Curve",
     "⚡ Convexity",
     "🏛️ Taylor Rule",
@@ -74,6 +74,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
     "⚖️ XVA (CVA/DVA/FVA)",
     "🌍 Cross-Currency Basis",
     "📊 Inflation-Linked",
+    "🏦 Callable Bonds",
+    "💱 FX Options",
 ])
 
 
@@ -2811,9 +2813,182 @@ with tab24:
         st.error(f"Inflation error: {_e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 25: Callable / Putable Bond (HW Trinomial Tree)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab25:
+    st.header("🏦 Callable / Putable Bond — Hull-White Trinomial Tree")
+    st.markdown(
+        "Backward induction on a calibrated HW trinomial lattice. "
+        "**Call option** caps bond value at call price (issuer's right). "
+        "**Put option** floors bond value at put price (holder's right). "
+        "**OAS** shifts the discount curve until model price = market price."
+    )
+    _cb_c1, _cb_c2 = st.columns(2)
+    with _cb_c1:
+        _cb_sofr    = st.slider("SOFR (%)", 1.0, 8.0, 5.0, 0.05, key="cb_sofr") / 100
+        _cb_coupon  = st.slider("Coupon (%)", 1.0, 10.0, 6.0, 0.1, key="cb_cpn") / 100
+        _cb_mat     = st.slider("Maturity (yrs)", 1.0, 15.0, 5.0, 0.5, key="cb_mat")
+        _cb_face    = st.number_input("Face", 10.0, 1000.0, 100.0, key="cb_face")
+    with _cb_c2:
+        _cb_hw_a    = st.slider("HW mean reversion a", 0.01, 0.50, 0.10, 0.01, key="cb_a")
+        _cb_hw_sig  = st.slider("HW sigma (%)", 0.1, 5.0, 1.0, 0.1, key="cb_sig") / 100
+        _cb_call_at = st.slider("Call price (0=no call)", 0.0, 110.0, 100.0, 1.0, key="cb_call")
+        _cb_call_yr = st.slider("Call start (yr)", 0.5, _cb_mat, min(_cb_mat / 2, _cb_mat - 0.5), 0.5, key="cb_cyr")
+
+    try:
+        from sofr_engine.bootstrap import flat_sofr_curve as _fsc_cb
+        from sofr_engine.callable_bond import (
+            HWTreeParams as _HWT, CallableBond as _CB,
+            straight_bond_price as _sbp, price_callable_bond as _pcb,
+            effective_duration as _ed, effective_convexity as _ec,
+        )
+        from datetime import date as _dcb
+        import numpy as _np_cb
+
+        _cb_curve = _fsc_cb(_dcb.today(), _cb_sofr)
+        _cb_hw    = _HWT(a=_cb_hw_a, sigma=_cb_hw_sig, dt=0.25)
+
+        _call_sched = []
+        if _cb_call_at > 0:
+            _t = _cb_call_yr
+            while _t <= _cb_mat + 1e-9:
+                _call_sched.append((_t, _cb_call_at))
+                _t += 0.5
+
+        _cb_bond    = _CB(face=_cb_face, coupon=_cb_coupon, maturity=_cb_mat,
+                          freq=2, call_schedule=_call_sched)
+        _straight   = _sbp(_cb_curve, _cb_bond)
+        _callable_p = _pcb(_cb_curve, _cb_hw, _cb_bond)
+        _opt_val    = _straight - _callable_p
+        _dur        = _ed(_cb_curve, _cb_hw, _cb_bond)
+        _cvx        = _ec(_cb_curve, _cb_hw, _cb_bond)
+
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric("Straight Price", f"{_straight:.3f}")
+        _m2.metric("Callable Price", f"{_callable_p:.3f}")
+        _m3.metric("Call Option Value", f"{_opt_val:.3f}")
+        _m4.metric("Eff. Duration", f"{_dur:.2f} yrs")
+
+        # Price vs coupon rate sensitivity
+        _coupons  = _np_cb.linspace(0.01, 0.12, 30)
+        _str_pvs  = []
+        _cal_pvs  = []
+        for _c in _coupons:
+            _b_s = _CB(face=_cb_face, coupon=_c, maturity=_cb_mat, freq=2)
+            _b_c = _CB(face=_cb_face, coupon=_c, maturity=_cb_mat, freq=2, call_schedule=_call_sched)
+            _str_pvs.append(_sbp(_cb_curve, _b_s))
+            _cal_pvs.append(_pcb(_cb_curve, _cb_hw, _b_c))
+
+        fig_cb, ax_cb = plt.subplots(figsize=(10, 4))
+        ax_cb.plot(_coupons * 100, _str_pvs, label="Straight bond", color="steelblue")
+        ax_cb.plot(_coupons * 100, _cal_pvs, label="Callable bond",  color="darkorange")
+        ax_cb.fill_between(_coupons * 100,
+                           _np_cb.array(_str_pvs) - _np_cb.array(_cal_pvs),
+                           alpha=0.15, color="red", label="Call option value")
+        ax_cb.axvline(_cb_coupon * 100, ls="--", color="gray", lw=1)
+        ax_cb.axhline(_cb_call_at, ls=":", color="black", lw=1, label=f"Call price {_cb_call_at}")
+        ax_cb.set_xlabel("Coupon Rate (%)")
+        ax_cb.set_ylabel("Bond Price")
+        ax_cb.set_title("Callable vs Straight Bond Price")
+        ax_cb.legend()
+        st.pyplot(fig_cb, use_container_width=True)
+        plt.close(fig_cb)
+    except Exception as _e_cb:
+        st.error(f"Callable bond error: {_e_cb}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 26: FX Options (Garman-Kohlhagen + Vanna-Volga Surface)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab26:
+    st.header("💱 FX Options — Garman-Kohlhagen + Vanna-Volga Smile")
+    st.markdown(
+        "**Garman-Kohlhagen** extends Black-Scholes to FX with domestic and foreign rates. "
+        "**Vanna-Volga** constructs the smile from 3 market quotes: ATM vol, "
+        "25Δ risk reversal (RR), and 25Δ butterfly (BF)."
+    )
+    _fx_c1, _fx_c2 = st.columns(2)
+    with _fx_c1:
+        _fx_spot  = st.number_input("Spot (USD/EUR)", 0.80, 1.50, 1.09, 0.01, key="fx_spot")
+        _fx_rd    = st.slider("USD rate (%)", 0.0, 8.0, 4.0, 0.1, key="fx_rd") / 100
+        _fx_rf    = st.slider("EUR rate (%)", 0.0, 6.0, 3.0, 0.1, key="fx_rf") / 100
+        _fx_vol   = st.slider("ATM vol (%)", 1.0, 30.0, 8.0, 0.5, key="fx_vol") / 100
+    with _fx_c2:
+        _fx_K     = st.number_input("Strike", 0.80, 1.50, 1.09, 0.01, key="fx_K")
+        _fx_T     = st.slider("Maturity (yrs)", 0.1, 3.0, 1.0, 0.1, key="fx_T")
+        _fx_rr    = st.slider("25Δ Risk Reversal (%)", -2.0, 2.0, 0.4, 0.05, key="fx_rr") / 100
+        _fx_bf    = st.slider("25Δ Butterfly (%)", 0.0, 2.0, 0.15, 0.05, key="fx_bf") / 100
+
+    try:
+        from sofr_engine.fx_options import (
+            FXOptionParams as _FXOP, gk_greeks as _gkg,
+            FXVolSurface as _FXVS, fx_smile as _fxsm,
+        )
+        import numpy as _np_fx
+
+        # Single option pricer
+        _call_p = _FXOP(spot=_fx_spot, strike=_fx_K, vol=_fx_vol,
+                        domestic_rate=_fx_rd, foreign_rate=_fx_rf,
+                        maturity=_fx_T, is_call=True)
+        _put_p  = _FXOP(spot=_fx_spot, strike=_fx_K, vol=_fx_vol,
+                        domestic_rate=_fx_rd, foreign_rate=_fx_rf,
+                        maturity=_fx_T, is_call=False)
+        _call_r = _gkg(_call_p)
+        _put_r  = _gkg(_put_p)
+
+        _gc1, _gc2, _gc3, _gc4 = st.columns(4)
+        _gc1.metric("Call PV", f"{_call_r.pv:.5f}")
+        _gc2.metric("Put PV",  f"{_put_r.pv:.5f}")
+        _gc3.metric("Call Δ", f"{_call_r.delta:.3f}")
+        _gc4.metric("Vega", f"{_call_r.vega:.5f}")
+
+        # Vanna-Volga smile
+        _surface = _FXVS(
+            maturities=[0.25, 0.5, 1.0, 2.0],
+            atm_vols=[max(0.01, _fx_vol * 0.9), max(0.01, _fx_vol * 0.95),
+                      _fx_vol, min(0.80, _fx_vol * 1.05)],
+            rr25=[_fx_rr * 0.8, _fx_rr * 0.9, _fx_rr, _fx_rr * 1.1],
+            bf25=[_fx_bf * 0.8, _fx_bf * 0.9, _fx_bf, _fx_bf * 1.1],
+            spot=_fx_spot,
+            domestic_rate=_fx_rd,
+            foreign_rate=_fx_rf,
+        )
+        _ks, _vs = _fxsm(_surface, _fx_T, n_strikes=41)
+
+        fig_fx, (ax_sm, ax_greek) = plt.subplots(1, 2, figsize=(12, 4))
+
+        ax_sm.plot(_ks, _np_fx.array(_vs) * 100, color="steelblue", lw=2)
+        ax_sm.axvline(_fx_spot, ls="--", color="gray", lw=1, label="Spot")
+        ax_sm.axvline(_fx_K,    ls=":",  color="red",  lw=1, label="Strike")
+        ax_sm.set_xlabel("Strike (USD/EUR)")
+        ax_sm.set_ylabel("Implied Vol (%)")
+        ax_sm.set_title(f"Vanna-Volga Smile ({_fx_T:.1f}Y)")
+        ax_sm.legend()
+
+        # Delta vs spot chart
+        _spots = _np_fx.linspace(_fx_spot * 0.8, _fx_spot * 1.2, 50)
+        _deltas = [_gkg(_FXOP(spot=float(s), strike=_fx_K, vol=_fx_vol,
+                              domestic_rate=_fx_rd, foreign_rate=_fx_rf,
+                              maturity=_fx_T, is_call=True)).delta
+                   for s in _spots]
+        ax_greek.plot(_spots, _deltas, color="darkorange", lw=2)
+        ax_greek.axvline(_fx_spot, ls="--", color="gray", lw=1, label="Spot")
+        ax_greek.axhline(0.5, ls=":", color="black", lw=1)
+        ax_greek.set_xlabel("Spot (USD/EUR)")
+        ax_greek.set_ylabel("Call Delta")
+        ax_greek.set_title("Delta vs Spot")
+        ax_greek.legend()
+
+        st.pyplot(fig_fx, use_container_width=True)
+        plt.close(fig_fx)
+    except Exception as _e_fx:
+        st.error(f"FX options error: {_e_fx}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 1,095 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 1,202 tests ✅ | Sharpe 0.282 OOS"
 )
