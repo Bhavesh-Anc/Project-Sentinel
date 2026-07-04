@@ -266,6 +266,106 @@ def flat_sofr_curve(ref_date: date, rate: float, max_tenor: float = 30.0) -> Dis
     return DiscountCurve(ref_date, tenors, dfs, label=f"Flat {rate*100:.2f}%")
 
 
+def global_sofr_bootstrap(
+    ref_date: date,
+    sofr_overnight: float,
+    ois_quotes: list[tuple[float, float]],
+    roughness_lambda: float = 1e-4,
+    payment_freq: int = 1,
+    sigma: float = 0.010,
+) -> DiscountCurve:
+    """
+    Global least-squares SOFR OIS curve fit with Tikhonov roughness penalty.
+
+    Sequential bootstrapping solves each pillar in isolation — errors at
+    short-end pillars propagate and amplify at longer tenors.  This function
+    fits *all* log-discount-factors simultaneously by minimising:
+
+        J(log_DF) = Σ_i (K_i^model − K_i^market)²
+                  + λ · ‖Δ²(log DF)‖²
+
+    where Δ² is the discrete second difference (curvature / roughness) of the
+    log-DF pillar values.  The result is a globally smooth curve that fits all
+    quoted maturities jointly, similar to the Hagan-West (2006) approach.
+
+    Parameters
+    ----------
+    ref_date          : pricing date
+    sofr_overnight    : overnight SOFR rate (decimal, e.g. 0.053)
+    ois_quotes        : [(tenor_years, par_rate_decimal), ...]
+    roughness_lambda  : Tikhonov regularisation weight.
+                        1e-5 → nearly identical to sequential bootstrap;
+                        1e-3 → noticeably smoother forward curve.
+    payment_freq      : OIS fixed-leg payment frequency (1=annual, 2=semi)
+    sigma             : Hull-White vol (kept for API consistency; unused here)
+
+    Returns
+    -------
+    DiscountCurve globally fitted to all input OIS quotes
+    """
+    from scipy.optimize import minimize
+
+    dt = 1.0 / payment_freq
+    quotes = sorted(ois_quotes, key=lambda x: x[0])
+    if not quotes:
+        raise ValueError("ois_quotes must not be empty")
+
+    tenors    = [q[0] for q in quotes]
+    par_rates = np.array([q[1] for q in quotes])
+
+    # Fixed pillars: t=0 (DF=1) and overnight
+    t_on        = 1.0 / 365.25
+    log_df_on   = np.log(1.0 / (1.0 + sofr_overnight / 360.0))
+    fixed_times = np.array([0.0, t_on])
+    fixed_ldfs  = np.array([0.0, log_df_on])
+
+    # Variable pillars: one log-DF per OIS tenor
+    var_times = np.array(tenors, dtype=float)
+    all_times = np.concatenate([fixed_times, var_times])
+
+    def _par_rate(ldfs_var: np.ndarray, tenor: float) -> float:
+        all_ldfs = np.concatenate([fixed_ldfs, ldfs_var])
+        payment_times = np.arange(dt, tenor + 1e-10, dt)
+        df_T = float(np.exp(np.interp(tenor, all_times, all_ldfs)))
+        if len(payment_times) == 0:
+            # Sub-annual: simple money-market rate  r = (1/DF - 1) / T
+            return (1.0 / df_T - 1.0) / tenor if tenor > 1e-10 else 0.0
+        ann = sum(dt * float(np.exp(np.interp(t, all_times, all_ldfs)))
+                  for t in payment_times)
+        return (1.0 - df_T) / ann if ann > 1e-12 else 0.0
+
+    def objective(ldfs_var: np.ndarray) -> float:
+        pricing_sq = sum(
+            (_par_rate(ldfs_var, q[0]) - q[1]) ** 2
+            for q in quotes
+        )
+        all_ldfs = np.concatenate([fixed_ldfs, ldfs_var])
+        d2 = np.diff(all_ldfs, n=2)
+        return pricing_sq + roughness_lambda * float(np.dot(d2, d2))
+
+    # Warm-start from sequential bootstrap
+    seq = SOFRCurveBootstrapper(ref_date, sofr_overnight, sigma=sigma)
+    seq.add_ois_swaps(ois_quotes, payment_freq=payment_freq)
+    seq_curve = seq.build()
+    x0 = np.array([np.log(seq_curve.df(t)) for t in var_times])
+
+    res = minimize(
+        objective,
+        x0,
+        method="L-BFGS-B",
+        bounds=[(None, 0.0)] * len(var_times),
+        options={"maxiter": 2000, "ftol": 1e-14, "gtol": 1e-10},
+    )
+
+    all_dfs = np.exp(np.concatenate([fixed_ldfs, res.x]))
+    return DiscountCurve(
+        ref_date=ref_date,
+        times=list(all_times),
+        dfs=list(all_dfs),
+        label="SOFR Global",
+    )
+
+
 if __name__ == "__main__":
     from datetime import date
     import pandas as pd

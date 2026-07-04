@@ -2,10 +2,11 @@
 DiscountCurve — core data structure for the SOFR pricing engine.
 
 Stores a set of (time, discount_factor) pillar points and interpolates
-using log-linear interpolation on discount factors, which guarantees:
-  - Positive forward rates everywhere (no negative arbitrage)
-  - Continuous discount function
-  - Simple, market-standard approach used by most front-office systems
+using either:
+  - log-linear (default): piecewise-flat forward rates, guaranteed positive,
+    market-standard for simple curve stripping
+  - pchip: monotone cubic Hermite spline on log-DFs, producing smooth C1
+    continuous forward rates with no kinks at pillar boundaries
 
 Time units: years (as floats), measured from the curve's reference date.
 """
@@ -15,17 +16,21 @@ import pandas as pd
 from datetime import date, datetime
 from typing import Sequence
 
+from scipy.interpolate import PchipInterpolator
+
 
 class DiscountCurve:
     """
-    Piecewise-flat forward rate curve with log-linear DF interpolation.
+    Discount curve with log-linear or PCHIP spline interpolation.
 
     Parameters
     ----------
-    ref_date   : curve anchor (today's date)
-    times      : sorted array of pillar times in years from ref_date
-    dfs        : discount factors at each pillar, DF(0) = 1.0
-    label      : optional name (e.g. 'SOFR OIS', 'Treasury')
+    ref_date      : curve anchor (today's date)
+    times         : sorted array of pillar times in years from ref_date
+    dfs           : discount factors at each pillar, DF(0) = 1.0
+    label         : optional name (e.g. 'SOFR OIS', 'Treasury')
+    interp_method : 'log-linear' (default, piecewise-flat forwards) or
+                    'pchip' (monotone cubic spline, smooth C1 forward curve)
     """
 
     def __init__(
@@ -34,9 +39,14 @@ class DiscountCurve:
         times: Sequence[float],
         dfs: Sequence[float],
         label: str = "SOFR",
+        interp_method: str = "log-linear",
     ):
         self.ref_date = ref_date
         self.label = label
+        self._interp_method = interp_method
+
+        if interp_method not in ("log-linear", "pchip"):
+            raise ValueError(f"interp_method must be 'log-linear' or 'pchip', got {interp_method!r}")
 
         times_arr = np.asarray(times, dtype=float)
         dfs_arr   = np.asarray(dfs,   dtype=float)
@@ -54,10 +64,24 @@ class DiscountCurve:
         self._times  = times_arr
         self._log_df = np.log(dfs_arr)
 
+        # Build PCHIP interpolant on log-DFs for smooth forward curves
+        if interp_method == "pchip":
+            self._pchip = PchipInterpolator(self._times, self._log_df, extrapolate=True)
+        else:
+            self._pchip = None
+
     # ── Core interpolation ────────────────────────────────────────────────────
 
     def df(self, t: float | np.ndarray) -> float | np.ndarray:
-        """Discount factor at time t (years). Log-linear interpolation."""
+        """
+        Discount factor at time t (years).
+
+        Uses PCHIP spline (smooth C1 forwards) when interp_method='pchip',
+        or log-linear (piecewise-flat forwards) otherwise.
+        """
+        if self._pchip is not None:
+            log_df = self._pchip(t)
+            return float(np.exp(log_df)) if np.ndim(t) == 0 else np.exp(log_df)
         log_df = np.interp(t, self._times, self._log_df)
         return np.exp(log_df)
 
@@ -157,6 +181,6 @@ class DiscountCurve:
     def __repr__(self) -> str:
         return (
             f"DiscountCurve(label='{self.label}', ref={self.ref_date}, "
-            f"pillars={len(self._times)}, "
-            f"max_tenor={self._times[-1]:.1f}y)"
+            f"pillars={len(self._times)}, max_tenor={self._times[-1]:.1f}y, "
+            f"interp={self._interp_method})"
         )

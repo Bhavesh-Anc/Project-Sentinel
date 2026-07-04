@@ -664,6 +664,65 @@ def swaption_implied_vol(
         return float("nan")
 
 
+def lmm_corr_from_pca(
+    rate_changes: np.ndarray,
+    n_components: int = 3,
+) -> np.ndarray:
+    """
+    Build an empirical LMM forward-rate correlation matrix from historical
+    data via PCA (level / slope / curvature factor decomposition).
+
+    The single-parameter exponential family ``ρ_{ij} = exp(−λ|T_i−T_j|)``
+    cannot capture the true factor structure of the SOFR curve.  This
+    function estimates the full (N×N) correlation matrix directly from
+    observed daily forward-rate changes using truncated SVD, retaining the
+    dominant ``n_components`` factors.
+
+    Parameters
+    ----------
+    rate_changes : (T_days, N) array of daily changes in N forward rates.
+                   Columns must correspond to the N forward rates implied by
+                   ``LMMParams.tenors`` in the same order.
+    n_components : number of PCA factors to retain (default 3:
+                   level, slope, curvature).  Higher values capture more
+                   idiosyncratic variance but may overfit to historical noise.
+
+    Returns
+    -------
+    corr : (N, N) positive-semi-definite correlation matrix with unit
+           diagonal.  Pass directly to ``LMMParams(corr_matrix=corr)``.
+
+    Notes
+    -----
+    Algorithm:
+      1. Demean the change matrix X (T_days × N).
+      2. Compute truncated SVD: X ≈ U Σ V^T, keep first n_components rows of V^T.
+      3. Loadings L = V^T[:k].T  — shape (N, k).
+      4. Factor correlation: C = L L^T + diag(residual variance).
+      5. Normalise to unit diagonal → correlation matrix.
+    """
+    X = np.asarray(rate_changes, dtype=float)
+    if X.ndim != 2:
+        raise ValueError("rate_changes must be 2-D: (T_days, N)")
+    T, N = X.shape
+    k = min(n_components, N, T - 1)
+
+    Xc = X - X.mean(axis=0)
+    _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
+    L = Vt[:k].T  # (N, k) PC loadings
+
+    # Factor-model correlation: L L^T + residual diagonal
+    C = L @ L.T
+    resid = np.maximum(1.0 - np.diag(C), 0.0)
+    C += np.diag(resid)
+
+    # Normalise to correlation matrix (unit diagonal)
+    d = np.sqrt(np.maximum(np.diag(C), 1e-15))
+    corr = C / np.outer(d, d)
+    np.fill_diagonal(corr, 1.0)
+    return np.clip(corr, -1.0, 1.0)
+
+
 __all__ = [
     "LMMParams",
     "LMMSimResult",
@@ -679,4 +738,5 @@ __all__ = [
     "calibrate_caplet_vols",
     "calibrate_corr_decay",
     "swaption_implied_vol",
+    "lmm_corr_from_pca",
 ]

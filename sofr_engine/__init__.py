@@ -16,7 +16,7 @@ bermudan       : Bermudan swaption — Longstaff-Schwartz LSM + European HW MC
 sabr           : SABR stochastic-vol model — smile, skew, calibration
 """
 from .curve import DiscountCurve
-from .bootstrap import SOFRCurveBootstrapper
+from .bootstrap import SOFRCurveBootstrapper, global_sofr_bootstrap
 from .instruments import SOFRSwap, ForwardRateAgreement, SOFRFutures
 from .convexity import hull_white_convexity_adjustment
 from .risk import ScenarioEngine, RiskReport
@@ -149,11 +149,13 @@ from .lmm import (
     calibrate_caplet_vols,
     calibrate_corr_decay,
     swaption_implied_vol,
+    lmm_corr_from_pca,
 )
 
 __all__ = [
     "DiscountCurve",
     "SOFRCurveBootstrapper",
+    "global_sofr_bootstrap",
     "SOFRSwap",
     "ForwardRateAgreement",
     "SOFRFutures",
@@ -230,6 +232,7 @@ __all__ = [
     "calibrate_caplet_vols",
     "calibrate_corr_decay",
     "swaption_implied_vol",
+    "lmm_corr_from_pca",
     # Callable Bond
     "HWTreeParams",
     "CallableBond",

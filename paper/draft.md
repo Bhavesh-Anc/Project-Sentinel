@@ -11,7 +11,7 @@ anchaliabhavesh1@gmail.com | GitHub: github.com/bhavesh-anc/project-sentinel
 
 ## Abstract
 
-We present an end-to-end production-grade quantitative framework for US interest rate markets in the post-LIBOR era, comprising nineteen interoperable modules: SOFR OIS curve bootstrapping, Hull-White convexity adjustment, Nelson-Siegel and PCA factor decomposition, Taylor Rule Fed-policy forecasting, carry and roll-down analytics, Black-76 and Bachelier cap/floor strip pricing, SABR stochastic-volatility calibration, Bermudan swaption pricing via Longstaff-Schwartz (LSM) Monte Carlo, CMS convexity adjustment (Linear TSR and static replication), two-factor G2++ short-rate model, SOFR Libor Market Model (BGM) with Rebonato swaption-vol approximation, CDS pricing with hazard-rate bootstrapping, CVA/DVA/FVA (XVA) via G2++ expected-exposure profiles, zero-coupon and year-on-year inflation-linked swap pricing, and cross-currency basis swap analytics. The complete codebase comprises 885+ automated tests, a FastAPI REST service, and an interactive Streamlit dashboard.
+We present an end-to-end production-grade quantitative framework for US interest rate markets in the post-LIBOR era, comprising nineteen interoperable modules: SOFR OIS curve bootstrapping, Hull-White convexity adjustment, Nelson-Siegel and PCA factor decomposition, Taylor Rule Fed-policy forecasting, carry and roll-down analytics, Black-76 and Bachelier cap/floor strip pricing, SABR stochastic-volatility calibration, Bermudan swaption pricing via Longstaff-Schwartz (LSM) Monte Carlo, CMS convexity adjustment (Linear TSR and static replication), two-factor G2++ short-rate model, SOFR Libor Market Model (BGM) with Rebonato swaption-vol approximation, CDS pricing with hazard-rate bootstrapping, CVA/DVA/FVA (XVA) via G2++ expected-exposure profiles, zero-coupon and year-on-year inflation-linked swap pricing, and cross-currency basis swap analytics. The complete codebase comprises 1,308 automated tests, a FastAPI REST service, and an interactive Streamlit dashboard.
 
 Our SOFR OIS discount curve is bootstrapped from publicly available data (overnight SOFR, Term SOFR, T-bill rates, Treasury CMT yields), with explicit Hull-White convexity adjustments for futures-vs-forward discrepancies, and is validated across three rate regimes spanning 550 basis points of Fed Funds movement (January 2022 to June 2026). Nelson-Siegel and PCA applied to 597 weeks of Treasury yield history confirm that three components explain 99.4% of total yield curve variation and document the 2022–2024 inversion episode (105 weeks, β₁ = +1.74% at deepest). Our AR(1) term-premium decomposition yields a 10Y term premium of 1.52% as of June 2026, consistent with Adrian-Crump-Moench (2013) estimates.
 
@@ -51,7 +51,7 @@ This paper makes eight primary contributions:
 
 8. **Inflation-Linked Products**: A Jarrow-Yildirim-inspired inflation curve with piecewise-flat forward CPI rates, pricing of zero-coupon and year-on-year inflation swaps, Black-76 cap/floor strips on CPI ratios, and calibration from ZC par rates.
 
-These contributions are unified by an executable Python codebase with 1,095 automated tests (see Appendix A for data sources; GitHub for full code), enabling real-time computation of all metrics as market conditions evolve.
+These contributions are unified by an executable Python codebase with 1,308 automated tests (see Appendix A for data sources; GitHub for full code), enabling real-time computation of all metrics as market conditions evolve.
 
 ---
 
@@ -1248,5 +1248,5 @@ where H is the 3×3 matrix of hedge-instrument PC sensitivities, n is the vector
 ---
 
 *Word count: ~22,000 (target: 18,000–25,000 — within range)*
-*Status: Draft v1.0 — Complete 19-module implementation with 1,095 automated tests. Sections 9–14 added covering advanced volatility (SABR, Cap/Floor, Bermudan LSM, CMS), multi-factor models (G2++, LMM/BGM), credit/XVA (CDS, CVA/DVA/FVA), inflation-linked products, cross-currency basis swaps, and system architecture. 31 references finalized. All numbers from live FRED data and calibrated models as of June 2026.*
+*Status: Draft v1.0 — Complete 21-module implementation with 1,308 automated tests. Sections 9–14 added covering advanced volatility (SABR, Cap/Floor, Bermudan LSM, CMS), multi-factor models (G2++, LMM/BGM), credit/XVA (CDS, CVA/DVA/FVA), inflation-linked products, cross-currency basis swaps, system architecture, callable bonds, FX options (Garman-Kohlhagen + Vanna-Volga), and three curve-construction upgrades: PCHIP spline interpolation, PCA-calibrated LMM correlation, and global Tikhonov-regularised bootstrap. 31 references finalized. All numbers from live FRED data and calibrated models as of June 2026.*
 *Next: SSRN upload, GitHub README with key result numbers.*

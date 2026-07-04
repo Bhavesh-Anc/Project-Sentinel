@@ -43,7 +43,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Paper:** [draft.md](paper/draft.md)")
-    st.markdown("**Tests:** 1,202 passing ✅")
+    st.markdown("**Tests:** 1,308 passing ✅")
     st.markdown("**Sharpe (OOS):** 0.282")
     st.markdown("**Hit rate:** 65.7% (12σ above random)")
 
@@ -2990,5 +2990,5 @@ with tab26:
 st.divider()
 st.caption(
     "Project Sentinel — Bhavesh Anchalia | VIT University | June 2026 | "
-    "SOFR Pricing Engine & Macro Signal Framework | 1,202 tests ✅ | Sharpe 0.282 OOS"
+    "SOFR Pricing Engine & Macro Signal Framework | 1,308 tests ✅ | Sharpe 0.282 OOS"
 )
